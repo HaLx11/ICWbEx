@@ -36,9 +36,9 @@
 
 ## 开发方式 / Development
 
-本项目的代码由 **AI 辅助构建**：作者提出需求、进行游戏内测试并反馈问题，AI 负责分析、编码与修复，逐步迭代至今。构建脚本（`build.py`）中内置的调用点断言与 [BUILDING.md](BUILDING.md) 中的协议备忘，均来自真实崩溃问题的排查结论——后来者修 bug 前建议先读它。
+本项目的代码由 **AI 辅助构建**。构建脚本（`build.py`）中内置的调用点断言与 [BUILDING.md](BUILDING.md) 中的协议备忘，均来自真实崩溃问题的排查结论——后来者修 bug 前建议先读它。
 
-The code in this project was built with the help of an AI coding assistant: the author drives requirements, in-game testing and bug reports, while the AI handles analysis, coding and fixes. The build-time call-site assertions and the protocol notes in BUILDING.md are distilled from real crash investigations - worth a read before touching the stubs.
+The code in this project was built with the help of an AI coding assistant. The build-time call-site assertions and the protocol notes in BUILDING.md are distilled from real crash investigations - worth a read before touching the stubs.
 
 ## 构建 / Building
 
