@@ -40,14 +40,6 @@
 
 The code in this project was built with the help of an AI coding assistant. The build-time call-site assertions and the protocol notes in BUILDING.md are distilled from real crash investigations - worth a read before touching the stubs.
 
-## 许可与致谢 / License & Acknowledgements
+## 许可
 
-本项目以 [MIT](LICENSE) 许可发布。
-
-- **ProjectRed** — [MIT](https://github.com/MrTJP/ProjectRed)，作者 MrTJP 与贡献者
-- **MrTJPCore** — [LGPL-3.0](https://github.com/MrTJP/MrTJPCore)，作者 MrTJP
-- **CodeChickenCore / CodeChickenLib** — [MIT](https://github.com/GTNewHorizons/CodeChickenLib)，作者 ChickenBones 与 GTNH 团队
-
-本模组是 ProjectRed IC 工作台的独立附属：不包含上述项目的任何代码，也不修改它们的 jar（运行时仅链接原版 jar 的接口）。ProjectRed 与 MrTJPCore 归其各自作者所有。
-
-This add-on is released under the MIT license. It contains no code from ProjectRed / MrTJPCore / CodeChickenLib and never modifies their jars - it only links against the vanilla jars at runtime. All upstream projects belong to their respective authors.
+[MIT](LICENSE)。ProjectRed 与 MrTJPCore 归其各自作者所有；本模组不包含、不修改它们的任何代码。
