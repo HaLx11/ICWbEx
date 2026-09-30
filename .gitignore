@@ -1,0 +1,17 @@
+# build outputs
+build/
+out/
+stubsout/
+
+# java
+*.class
+
+# python
+__pycache__/
+*.pyc
+
+# IDE / OS noise
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store

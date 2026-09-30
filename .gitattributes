@@ -1,0 +1,10 @@
+# normalize line endings in the repo, check out as-is
+* text=auto eol=lf
+
+# windows scripts keep CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# binaries
+*.jar binary
+*.png binary
