@@ -22,13 +22,13 @@
 
 在 IC 工作台 GUI 里：`H` 打开操作说明，`Esc` 逐层退出。快捷键总表：
 
-| 操作 | 按键 |
-|---|---|
-| 放置 / 打开元件设置 / 拾取 | 左键 / 右键 / 中键 |
-| 框选（追加） | 按住 Ctrl 拖动（Shift 追加） |
+| 操作                     | 按键                            |
+| ---------------------- | ----------------------------- |
+| 放置 / 打开元件设置 / 拾取       | 左键 / 右键 / 中键                  |
+| 框选（追加）                 | 按住 Ctrl 拖动（Shift 追加）          |
 | 复制 / 剪切 / 粘贴 / 删除 / 全选 | Ctrl+C / X / V / Del / Ctrl+A |
-| 撤销 / 重做 | Ctrl+Z / Ctrl+Y |
-| 蓝图面板 | 右上角「蓝图」按钮 |
+| 撤销 / 重做                | Ctrl+Z / Ctrl+Y               |
+| 蓝图面板                   | 右上角「蓝图」按钮                     |
 
 ## 已知问题
 
@@ -40,14 +40,14 @@
 
 The code in this project was built with the help of an AI coding assistant. The build-time call-site assertions and the protocol notes in BUILDING.md are distilled from real crash investigations - worth a read before touching the stubs.
 
-## 构建 / Building
+## 许可与致谢 / License & Acknowledgements
 
-见 [BUILDING.md](BUILDING.md)。一句话版本：
+本项目以 [MIT](LICENSE) 许可发布。
 
-```bash
-python build.py        # 需要 JDK(9+) 与 Python 3，产出 out/ICWbEx-0.2.8.jar
-```
+- **ProjectRed** — [MIT](https://github.com/MrTJP/ProjectRed)，作者 MrTJP 与贡献者
+- **MrTJPCore** — [LGPL-3.0](https://github.com/MrTJP/MrTJPCore)，作者 MrTJP
+- **CodeChickenCore / CodeChickenLib** — [MIT](https://github.com/GTNewHorizons/CodeChickenLib)，作者 ChickenBones 与 GTNH 团队
 
-## 许可
+本模组是 ProjectRed IC 工作台的独立附属：不包含上述项目的任何代码，也不修改它们的 jar（运行时仅链接原版 jar 的接口）。ProjectRed 与 MrTJPCore 归其各自作者所有。
 
-[MIT](LICENSE)。ProjectRed 与 MrTJPCore 归其各自作者所有；本模组不包含、不修改它们的任何代码。
+This add-on is released under the MIT license. It contains no code from ProjectRed / MrTJPCore / CodeChickenLib and never modifies their jars - it only links against the vanilla jars at runtime. All upstream projects belong to their respective authors.
