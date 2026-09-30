@@ -32,7 +32,13 @@
 
 ## 已知问题
 
-- **0.2.7 期间（2026-09-29 前后）加载过含集束线缆的电路的存档**，其 IC 可能已被保存成"无线缆"状态——这是 0.2.7 的同步回归造成的存档级丢失，0.2.8 修复后需要重新贴一次蓝图恢复。0.2.8 不会再发生。
+- **集束线缆不支持复制**：框选与复制会自动跳过集束线缆，粘贴也不会覆盖它们所在的格子。原因是经由剪贴板/整板描述包同步集束线缆会触发 ProjectRed 的 null-signal bug（空闲的全零信号在服务端被解析成 null 并导致崩溃），因此只能刻意绕开。若上游修复后，这一限制有望解除。
+
+## 开发方式 / Development
+
+本项目的代码由 **AI 辅助构建**：作者提出需求、进行游戏内测试并反馈问题，AI 负责分析、编码与修复，逐步迭代至今。构建脚本（`build.py`）中内置的调用点断言与 [BUILDING.md](BUILDING.md) 中的协议备忘，均来自真实崩溃问题的排查结论——后来者修 bug 前建议先读它。
+
+The code in this project was built with the help of an AI coding assistant: the author drives requirements, in-game testing and bug reports, while the AI handles analysis, coding and fixes. The build-time call-site assertions and the protocol notes in BUILDING.md are distilled from real crash investigations - worth a read before touching the stubs.
 
 ## 构建 / Building
 
