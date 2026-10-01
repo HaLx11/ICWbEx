@@ -51,7 +51,7 @@ OUT_DIR = os.path.join(HERE, "out")
 STUBSOUT = os.path.join(HERE, "build", "stubsout")
 CLASSES = os.path.join(HERE, "build", "out")
 
-NEW_VER = "0.4.6"
+NEW_VER = "0.4.7"
 OLD_VER = b"0.2.6"
 NEW_VER_B = NEW_VER.encode("ascii")
 
@@ -77,7 +77,21 @@ REPLACE = [
     # finished jar for exactly that.
     "icwbe/Blueprints.class",
 ]
-ADD = ["icwbe/Replay.class"]
+ADD = [
+    "icwbe/Replay.class",
+    # 0.4.7: the board-growth geometry. Kept as its own class (and deliberately free
+    # of Minecraft/ProjectRed types) so the planner can be executed outside the game:
+    # tools/verify_growth.py in the devpack compiles this file alone and drives the
+    # whole case table without launching Minecraft.
+    "icwbe/Grow.class",
+    # 0.4.7: the controls page's shape (section split + column dealing), also free of
+    # Minecraft types so tools/verify_helplayout.py can drive it offline. Layout bugs
+    # are otherwise only visible by opening the GUI and squinting.
+    "icwbe/HelpLayout.class",
+    # 0.4.7: the status line's placement and fit budget. Pure int maths so
+    # tools/verify_helplayout.py can prove the status is never silently truncated.
+    "icwbe/StatusLine.class",
+]
 
 MCINFO_DESCRIPTION = (
     "Client-side convenience add-on for the ProjectRed Integrated Circuit Workbench.\n\n"
@@ -228,6 +242,60 @@ MCINFO_DESCRIPTION = (
     "the box gets the danger border, the number of parts is printed next to it, and the part under the "
     "cursor is outlined before you even press, so nothing is deleted sight unseen. Both come from the "
     "same grid conversion the deletion itself uses, so the preview cannot disagree with the result.\n\n"
+    "0.4.7: rebuilds board growth. Growing used to enlarge the board cell by cell to "
+    "exactly what the paste needed (a 16x16 board plus a stray paste became 20x17), and it "
+    "only looked at the paste's extent - so every IO that had been sitting on the right or "
+    "bottom edge stayed where it was and ended up in the middle of the bigger board. "
+    "ProjectRed places an IO by POSITION (OpIOGate.canPlace = isOnBorder && !isOnEdge), so "
+    "those blueprints were no longer valid. Growth now steps in whole 16x16 plates, stops at "
+    "the vanilla 64x64 ceiling (NewICNode.maxBoardSize = 4 plates) and refuses cleanly "
+    "beyond it, and every IO that a growth pushes off the ring is walked out to the new one - "
+    "moved, not rewritten, so its rotation (i.e. which side of the IC it stands for) is kept. "
+    "The trigger is now exactly 'this paste would produce an illegal board': a part landing "
+    "off the board, or a GATE landing on the ring (OpGate.canPlace = !isOnBorder). Wires, "
+    "torches, levers and buttons declare no canPlace in ProjectRed and stay legal on the ring, "
+    "so they no longer drag a growth behind them. The old per-cell growth is gone with them. "
+    "A clipboard that holds an IO gate is never allowed to grow the board at all: an IO is "
+    "legal only on the ring and growing moves the ring, so a paste aimed at putting its IO on "
+    "the border stopped landing on it the moment the board got bigger - the IO ended up "
+    "stranded in the middle, which is what the player reported. Such a paste is applied as-is "
+    "instead, and the status line says so (and how many cells fell outside the board) because "
+    "ProjectRed itself says nothing: its only placement checks are the interactive canPlace "
+    "ones that setPart bypasses, and refreshErrors reports wiring only - so an IO off the ring "
+    "is accepted silently and still registers as that side's interface.\n\n"
+    "0.4.7 also fixes the last way a paste could produce an illegal board. Growth only ever \n"
+    "covers the right and bottom sides, so a GATE aimed at the left or top border - or at any \n"
+    "corner, which OpGate.canPlace counts as border too - was placed there unopposed, and the \n"
+    "border rule of that release only ran when the clipboard held an IO, so a corner escaped even \n"
+    "then. Two different vanilla predicates had been conflated: OpGate.canPlace is !isOnBorder \n"
+    "(corners included) while OpIOGate.canPlace is isOnBorder && !isOnEdge (corners excluded). A \n"
+    "paste now never writes the outer border with anything but an IO gate, unconditionally and \n"
+    "with the corners included, and reports how many cells it left out. A gate at the right or \n"
+    "bottom is still rescued by growing the board instead of being dropped. Note this is stricter \n"
+    "than ProjectRed, which only forbids GATES on the border - wires may legally lie there - so \n"
+    "edge wiring can no longer be pasted and has to be laid by hand.\n\n"
+    "0.4.7 also rebuilds the controls page (H). It used to be one flat text run with the section names "
+    "typed into the body, no gap between sections and a single column that used less than half the "
+    "panel width - so 30 lines did not fit and the line height was squeezed to 7px, tighter than the "
+    "font itself. Sections are now parsed into blocks with coloured headings, rules and an indent, a "
+    "blank line separates them, and the blocks are dealt into as many columns as it takes to reach a "
+    "readable line height - solved together against the real panel size, so the page adapts to the GUI "
+    "scale (2 columns at a small GUI, 1 wide one at a large GUI) instead of overflowing.\n\n"
+    "0.4.7 also moves the status line into the header strip and stops it being cut off. It sat in a 62px "
+    "column in the right-hand strip wrapped to 7 lines, and every notice a paste raised was appended to "
+    "it unconditionally - one paste can raise three, about 566px in Chinese and 924px in English, which "
+    "at 62px needs 10 to 28 lines against a limit of 7, so the renderer cut the message off mid-sentence "
+    "with no sign of it. The status now lives in the strip above the board (about 3.7x the width, and "
+    "exactly the two lines the vanilla layout leaves free above the board viewport), starts after the "
+    "localised machine title instead of a fixed x, and admits a notice only while the message still "
+    "fits - whole or not at all. The persistent operation hints keep their narrow column, which suits "
+    "their short multi-line shape, and no longer hide behind a status message.\n\n"
+    "The controls page also pages now. Its first pass solved the column count and line height to fit the "
+    "window, but the fallback branch still drew every line - so on a small GUI the text was painted past "
+    "the bottom of the panel and off the screen. The panel now uses the whole window height, the content "
+    "is built line by line and only the lines inside the visible window are drawn, and the wheel scrolls "
+    "it (with a scrollbar and a position in the footer) instead of squeezing the text below a readable "
+    "size. Status messages also stay up about twice as long, scaled by their length.\n\n"
     "Purely client-side. The ProjectRed jar itself is never modified, and no custom network channel is "
     "registered: opening the GUI, resizing the board, pasting, undoing and loading blueprints all go "
     "through ProjectRed's own IC synchronisation protocol. The server therefore does NOT need this mod."
