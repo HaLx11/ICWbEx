@@ -8,7 +8,7 @@
 
 - **蓝图面板**：把当前 IC 保存为命名的 `.icbp` 文件（`.minecraft/blueprints/`），随时加载、删除；支持把整块电路压成"分享串"发给别人导入。Blueprint panel (save/load/delete named layouts, share codes).
 - **框选与剪贴板**：Ctrl+拖拽框选（Shift 追加），Ctrl+C / X / V 复制、剪切、粘贴；粘贴时自动保护集束线缆所在的格子。Marquee select, copy/cut/paste, bundled-cable cells protected on paste.
-- **自动扩版**：把内容粘到板外时自动把蓝图扩大（以 16 格为单位，上限 64×64），并维护边界上的出入口。见下节。Auto board growth in whole 16×16 plates, capped at 64×64.
+- **自动扩版**：把内容粘到板外时自动把蓝图扩大（以 16 格为单位，上限 64×64），并维护边界上的出入口。Auto board growth in whole 16×16 plates, capped at 64×64.
 - **擦除预览**：选中原版擦除工具后框选，会红色标出"松手就会删掉"的元件并显示计数。Red preview of what an erase will remove.
 - **撤销 / 重做**：Ctrl+Z / Ctrl+Y，与服务器同步安全。Undo/redo.
 - **中键拾取**：对着元件按中键直接拿起它。Middle-click pick-part.
