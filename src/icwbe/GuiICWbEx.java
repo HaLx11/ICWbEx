@@ -41,13 +41,16 @@ import mrtjp.core.vec.Point;
 import mrtjp.core.vec.Size;
 import mrtjp.projectred.fabrication.BundledCableICPart;
 import mrtjp.projectred.fabrication.CircuitOp;
+import mrtjp.projectred.fabrication.CircuitOpErase;
 import mrtjp.projectred.fabrication.GuiICWorkbench;
 import mrtjp.projectred.fabrication.IntegratedCircuit;
+import mrtjp.projectred.fabrication.NewICNode;
 import mrtjp.projectred.fabrication.PrefboardNode;
 import mrtjp.projectred.fabrication.TileICWorkbench;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.FontRenderer;
 import net.minecraft.client.gui.GuiScreen;
+import net.minecraft.nbt.NBTTagCompound;
 import org.lwjgl.input.Keyboard;
 import org.lwjgl.input.Mouse;
 import scala.Function0;
@@ -68,6 +71,12 @@ extends GuiICWorkbench {
     private static final int TXT_STATUS = -16097672;
     private static final int TXT_ERROR = -6676705;
     private static final int PER_CELL_DRAW_LIMIT = 600;
+    /**
+     * 0.4.5: the vanilla eraser's "these cells are going away" preview. Deliberately a
+     * red danger tint, so it cannot be mistaken for the cyan copy/selection marquee.
+     */
+    private static final int ERASE_FILL = 0x50FF3B30;
+    private static final int ERASE_BORDER = 0xFFFF5555;
     private final TileICWorkbench tile;
     private final UndoBuffer undo = new UndoBuffer();
     private final Set<Long> selected = new LinkedHashSet<Long>();
@@ -87,6 +96,32 @@ extends GuiICWorkbench {
     private int statusTtl;
     private boolean helpVisible;
     private MCButtonNode bpBtn;
+    /**
+     * 0.4.3: a marquee that came from the VANILLA eraser tool, which has to end in a
+     * safe delete (see eraserMode / mouseReleased_Impl).
+     */
+    private boolean eraseDrag;
+    /**
+     * 0.4.6: this marquee was abandoned because the board moved underneath it.
+     *
+     * <p>The box is recorded in root/screen space, so it only means anything while the
+     * board stays where it was. Shift + left drag is the VANILLA board pan ({@code
+     * PanNode.dragTestFunction} = left shift, driven from its {@code frameUpdate}; our
+     * {@code intercepting()} only switches off the prefboard, never PanNode, so the pan
+     * really happens) - and dragging then released a marquee over cells that had slid
+     * away, deleting the wrong parts. The same goes for any pan or zoom that lands
+     * between press and release.
+     */
+    private boolean gestureAborted;
+    private int gesturePanX;
+    private int gesturePanY;
+    private double gestureCellPx;
+    /**
+     * 0.3.9: the vanilla "new IC" dialogs we have already re-routed (see addChild).
+     * Identity-based: the dialog is created fresh every time it is opened.
+     */
+    private final Set<NewICNode> newICPatch = java.util.Collections
+        .newSetFromMap(new java.util.IdentityHashMap<NewICNode, Boolean>());
 
     public GuiICWbEx(TileICWorkbench tileICWorkbench) {
         super(tileICWorkbench);
@@ -137,6 +172,92 @@ extends GuiICWorkbench {
 
     private void openBlueprints() {
         Minecraft.func_71410_x().func_147108_a((GuiScreen)new GuiBlueprint(this.tile, this));
+    }
+
+    /**
+     * 0.3.9: 原版的"新建 IC"对话框（NewICNode）一旦被加到界面里，就把它的
+     * {@code completionDelegate} 换成我们的安全实现。
+     *
+     * <h3>为什么必须换</h3>
+     * 原版的完成动作（反汇编 {@code GuiICWorkbench$$anonfun$onAddedToParent_Impl$8$$anonfun$apply$mcV$sp$1}）是：
+     * <pre>
+     *   IntegratedCircuit ic = new IntegratedCircuit();
+     *   ic.name = nic.getName();
+     *   ic.size = nic.selectedBoardSize().$times(16);
+     *   tile.sendNewICToServer(ic);      // ← 一张原始整板 desc
+     * </pre>
+     * 而整板 desc 会被服务器立刻回显，客户端 {@code readDesc} 会<b>整块替换本地板</b>——
+     * 如果这一刻服务器还在为旧板发逐元件状态帧，那些帧就会落到空格子上，PR 兜底
+     * {@code createPart(id)} 建出 subID=0 的零件，序列/计时门的下一个 key&gt;10 帧直接
+     * {@code IllegalArgumentException: Invalid gate subID: 0} 断连（2026-10-01 11:51 现场：
+     * 用户在 371 件板上开了这个对话框，崩在 (1,1)/(1,2)/(2,5)… 那一圈计时/IO 门上）。
+     * 另外服务器只在 {@code hasBP} 为真时才接受整板 desc，所以在别的时机点"确定"会
+     * 静默丢弃、看起来"不生效"。
+     *
+     * <p>这里把完成动作换掉之后，重置走的是与"蓝图载入"完全相同的两阶段路径：
+     * 先停泊还会发帧的门 → 发空白 desc（带目标名字与尺寸）→ 收敛后再应用目标板。
+     * 尺寸与名字都按用户在对话框里选的那样，行为与原版一致，只是不再裸发 desc。
+     */
+    @Override
+    public void addChild(TNode tNode) {
+        super.addChild(tNode);
+        if (tNode instanceof NewICNode) {
+            this.rerouteNewIC((NewICNode)tNode);
+        }
+    }
+
+    private void rerouteNewIC(final NewICNode newICNode) {
+        if (!this.newICPatch.add(newICNode)) {
+            return;
+        }
+        newICNode.completionDelegate_$eq((Function0)new ScalaH.Act() {
+            @Override
+            public void run() {
+                GuiICWbEx.this.newBoardSafely(newICNode);
+            }
+        });
+        System.out.println("[ICWbEx] vanilla new-IC dialog re-routed through the two-phase path");
+    }
+
+    /**
+     * 原版"新建 IC"的安全版：把选中的尺寸/名字做成一张空板，应用到本地后交给
+     * {@link Sync} 走两阶段提交（停泊 → 空白 desc → 重建）。服务器那边该有的
+     * {@code hasBP} 前提与原版一致（没有插蓝图时原版连对话框都不会出现）。
+     */
+    private void newBoardSafely(NewICNode newICNode) {
+        IntegratedCircuit integratedCircuit = this.ic();
+        if (integratedCircuit == null || this.tile == null) {
+            return;
+        }
+        if (!this.tile.hasBP()) {
+            // 与原版同一个前提：没有 IC 蓝图/板时服务器会丢弃整板 desc，这里直接讲清楚
+            this.say(Lang.t("st.newic_nobp"), true);
+            return;
+        }
+        try {
+            String string = newICNode.getName();
+            if (string == null) {
+                string = "";
+            }
+            Size size = newICNode.selectedBoardSize().$times(16);
+            IntegratedCircuit integratedCircuit2 = new IntegratedCircuit();
+            integratedCircuit2.name_$eq(string);
+            integratedCircuit2.size_$eq(size);
+            NBTTagCompound nBTTagCompound = new NBTTagCompound();
+            integratedCircuit2.save(nBTTagCompound);
+            // 先落到本地，再让 Sync 接管（它认得"尺寸变了"这种情况：会先停泊、再发空白 desc）
+            integratedCircuit.load(nBTTagCompound);
+            integratedCircuit.refreshErrors();
+            Sync.toServer(this.tile, integratedCircuit);
+            this.onCircuitReloaded();
+            this.say(Lang.t("st.newic", string, String.valueOf(size.width()), String.valueOf(size.height())));
+            System.out.println("[ICWbEx] new board \"" + string + "\" " + size.width() + "x" + size.height()
+                + " (two-phase path, no raw desc)");
+        }
+        catch (Throwable throwable) {
+            this.say(String.valueOf(throwable), true);
+            throwable.printStackTrace();
+        }
     }
 
     private int panOriginX() {
@@ -217,12 +338,51 @@ extends GuiICWorkbench {
     }
 
     private boolean intercepting() {
-        return GuiICWbEx.ctrlHeld() || this.pasteMode || this.helpVisible;
+        // 0.4.6: while shift is held we must NOT take the mouse. Shift + left drag is the
+        // VANILLA board pan (PanNode.dragTestFunction = left shift; only the prefboard is
+        // switched off by applyIntercept, never PanNode), so keeping the eraser in charge
+        // there is what produced a marquee over a board that had already slid away.
+        return GuiICWbEx.ctrlHeld() || this.pasteMode || this.helpVisible
+            || (this.eraserMode() && !GuiICWbEx.shiftHeld());
+    }
+
+    /**
+     * 0.4.3: true while the player has the VANILLA eraser selected in the toolbar.
+     *
+     * <h3>Why we take it over</h3>
+     * The vanilla tools apply their op straight to the local board and put the op packet
+     * on the wire, with none of the staging ICWbEx uses. Erasing therefore re-opens the
+     * exact window the two-phase commit exists to close: our copy already lost the part
+     * while the server still has it (or vice versa) and keeps streaming that part's state
+     * frames. For a wire that is harmless, but erase a part next to a sequential gate and
+     * PR's readPartStream fallback re-creates the gate with subID 0 - the next key>10
+     * frame is an "Invalid gate subID: 0" disconnect (2026-10-01 12:44 field case: a
+     * vanilla erase 28s after loading a board killed the client).
+     *
+     * <p>So while the eraser is selected we take the mouse away from the prefboard
+     * ({@link #intercepting}) and treat the gesture as a selection: click or drag a box,
+     * release, and the cells are deleted through {@link #deleteKeys} - the same staged
+     * path the selection keys use (parking included), which cannot leave the two sides
+     * disagreeing. Nothing else about the eraser changes: pick it as usual, and one click
+     * erases one cell exactly as before.
+     */
+    private boolean eraserMode() {
+        PrefboardNode prefboardNode = this.pref();
+        if (prefboardNode == null) {
+            return false;
+        }
+        try {
+            return prefboardNode.currentOp() instanceof CircuitOpErase;
+        }
+        catch (Throwable t) {
+            return false;
+        }
     }
 
     public void frameUpdate_Impl(Point point, float f) {
         super.frameUpdate_Impl(point, f);
         ++this.tick;
+        Sync.pump();
         if (this.statusTtl > 0) {
             --this.statusTtl;
         }
@@ -232,10 +392,12 @@ extends GuiICWorkbench {
         this.pollMiddleClick(point);
         IntegratedCircuit integratedCircuit = this.ic();
         if (integratedCircuit != null && !this.dragging) {
-            if (Sync.echoHold()) {
-                // A whole-circuit desc echo may still rebuild the client board
-                // (blueprint load / board growth with bundled cables); do not
-                // record that transient state into the undo buffer.
+            // 0.4.4: the vanilla tools write through the server, so the board can change
+            // without one of our commits running. Keep the diff base level with it.
+            Sync.followLocalBoard(this.tile, integratedCircuit);
+            if (Sync.echoHold() || Sync.busy()) {
+                // An echo or a staged two-phase edit may still rebuild the client
+                // board; do not record that transient state into the undo buffer.
             }
             else if (Sync.consumeRebase()) {
                 // Echo settled: re-baseline the undo buffer on the converged board.
@@ -322,16 +484,79 @@ extends GuiICWorkbench {
                 this.dragX0 = this.dragX1 = n2;
                 this.dragY0 = this.dragY1 = n3;
                 this.dragging = true;
+                this.beginGesture();
             } else {
                 this.selected.clear();
             }
             return true;
         }
+        if (this.eraserMode()) {
+            // 0.4.3: the vanilla eraser -> marquee delete. Left drag (or a plain click,
+            // which is a 1-cell marquee) collects cells; release deletes them safely.
+            // 0.4.5: the cells that are about to go are highlighted while you drag, and
+            // the hovered one is outlined before you press (drawSelectionOverlay).
+            // 0.4.6: NOT while shift is held - that is the vanilla board pan (see
+            // gestureAborted / beginGesture), and starting an erase there is how the
+            // marquee ended up deleting cells the board had already slid past.
+            if (n == 0 && !GuiICWbEx.shiftHeld()) {
+                this.dragX0 = this.dragX1 = n2;
+                this.dragY0 = this.dragY1 = n3;
+                this.dragging = true;
+                this.eraseDrag = true;
+                this.beginGesture();
+                return true;
+            }
+            return false;
+        }
         return false;
+    }
+
+    /**
+     * 0.4.6: remember where the board was when a screen-space marquee started, so the
+     * release can tell whether the box still covers the cells the player drew it over.
+     */
+    private void beginGesture() {
+        this.gestureAborted = false;
+        PrefboardNode prefboardNode = this.pref();
+        if (prefboardNode == null) {
+            this.gesturePanX = 0;
+            this.gesturePanY = 0;
+            this.gestureCellPx = 0.0;
+            return;
+        }
+        this.gesturePanX = prefboardNode.position().x();
+        this.gesturePanY = prefboardNode.position().y();
+        this.gestureCellPx = this.cellPx();
+    }
+
+    /** true when the board slid or changed zoom since {@link #beginGesture}. */
+    private boolean boardMovedSinceGesture() {
+        PrefboardNode prefboardNode = this.pref();
+        if (prefboardNode == null) {
+            return true;
+        }
+        return prefboardNode.position().x() != this.gesturePanX
+            || prefboardNode.position().y() != this.gesturePanY
+            || Math.abs(this.cellPx() - this.gestureCellPx) > 0.0001;
     }
 
     public boolean mouseDragged_Impl(Point point, int n, long l, boolean bl) {
         if (this.dragging) {
+            if (!this.gestureAborted) {
+                if (this.eraseDrag && GuiICWbEx.shiftHeld()) {
+                    // 0.4.6: shift means "pan the board", not "delete a box" - the vanilla
+                    // pan took this gesture over, so drop ours instead of deleting from it.
+                    this.gestureAborted = true;
+                }
+                else if (this.boardMovedSinceGesture()) {
+                    // panned (shift drag / scrollbar) or zoomed mid-marquee: the box no
+                    // longer covers what was drawn over, so it is not safe to act on.
+                    this.gestureAborted = true;
+                }
+            }
+            if (this.gestureAborted) {
+                return false;   // hand drag handling back to vanilla
+            }
             this.dragX1 = this.rootX(point);
             this.dragY1 = this.rootY(point);
             return true;
@@ -339,15 +564,134 @@ extends GuiICWorkbench {
         return super.mouseDragged_Impl(point, n, l, bl);
     }
 
+    /**
+     * 0.4.5: the mouse wheel keeps working while ICWbEx has taken the mouse ({@code
+     * intercepting}) - picking the eraser used to swallow it, so a board could not be
+     * zoomed while erasing, which is exactly when you want to zoom.
+     *
+     * <p>Vanilla zooms by {@code PrefboardNode.mouseScrolled_Impl}, which needs the
+     * cursor converted through two coordinate spaces; here the zoom is driven through
+     * the node's own public {@code incScale}/{@code decScale} instead (same 0.2 step and
+     * the same 0.5-3.0 clamp as vanilla), anchored on the board frame - no conversion to
+     * get wrong. The event is only ours when the prefboard was switched off; otherwise
+     * the prefboard already handled it and this method is never reached.
+     */
+    public boolean mouseScrolled_Impl(Point point, int n, boolean bl) {
+        if (!this.intercepting() || this.pasteMode || this.helpVisible) {
+            return super.mouseScrolled_Impl(point, n, bl);
+        }
+        PrefboardNode prefboardNode = this.pref();
+        if (prefboardNode == null || bl || n == 0) {
+            return false;
+        }
+        try {
+            if (n > 0) {
+                prefboardNode.incScale();
+            }
+            else {
+                prefboardNode.decScale();
+            }
+        }
+        catch (Throwable throwable) {
+            return false;
+        }
+        return true;
+    }
+
     public boolean mouseReleased_Impl(Point point, int n, boolean bl) {
         if (this.dragging) {
             this.dragging = false;
             this.dragX1 = this.rootX(point);
             this.dragY1 = this.rootY(point);
-            this.applyMarquee();
+            if (this.gestureAborted) {
+                // 0.4.6: the board was panned (shift drag) or zoomed while the box was open,
+                // so the box and the cells it was drawn over no longer line up. Acting on it
+                // is exactly what deleted the wrong parts, so drop the gesture and say so
+                // instead of silently doing nothing.
+                this.gestureAborted = false;
+                this.eraseDrag = false;
+                this.say(Lang.t("st.marquee_moved"), true);
+                return false;
+            }
+            if (this.eraseDrag) {
+                // 0.4.3: came from the vanilla eraser - delete the marquee through the
+                // staged path instead of merely selecting it.
+                this.eraseDrag = false;
+                this.eraseRect(this.dragX0, this.dragY0, this.dragX1, this.dragY1);
+            }
+            else {
+                this.applyMarquee();
+            }
             return true;
         }
         return super.mouseReleased_Impl(point, n, bl);
+    }
+
+    /**
+    /**
+     * 0.4.3: delete every part inside a screen-space rectangle, through the staged
+     * (two-phase) path. Unlike the selection marquee this INCLUDES bundled cables -
+     * {@code Clipboard.grab} skips them because pasting a cable is the one thing the
+     * sync cannot replay, but deleting one is fine (cables stream at keys 1-5, they are
+     * never parked and never trigger the subID-0 fallback).
+     */
+    private void eraseRect(int rx0, int ry0, int rx1, int ry1) {
+        IntegratedCircuit integratedCircuit = this.ic();
+        if (integratedCircuit == null) {
+            return;
+        }
+        int n = this.gridXAt(Math.min(rx0, rx1));
+        int n2 = this.gridXAt(Math.max(rx0, rx1));
+        int n3 = this.gridYAt(Math.min(ry0, ry1));
+        int n4 = this.gridYAt(Math.max(ry0, ry1));
+        ArrayList<Long> arrayList = new ArrayList<Long>();
+        for (int i = n3; i <= n4; ++i) {
+            for (int j = n; j <= n2; ++j) {
+                if (Clipboard.partAt(integratedCircuit, j, i) == null) continue;
+                arrayList.add(Long.valueOf(Clipboard.key(j, i)));
+            }
+        }
+        this.deleteKeys(arrayList);
+    }
+
+    /**
+     * 0.4.3: the one place that removes parts. Shared by the selection delete (Del) and
+     * by the vanilla-eraser marquee so both cannot drift apart - every removal has to go
+     * through Sync.toServer, which stages the dangerous cells (parks anything that can
+     * stream a key>10 state frame) before the removal leaves the client.
+     */
+    private int deleteKeys(java.util.List<Long> keys) {
+        IntegratedCircuit integratedCircuit = this.ic();
+        if (integratedCircuit == null) {
+            return 0;
+        }
+        if (keys.isEmpty()) {
+            this.say(Lang.t("st.no_sel"), true);
+            return 0;
+        }
+        // 0.3.0: refuse while a staged edit is still converging.
+        if (Sync.busy()) {
+            this.say(Lang.t("st.busy"), true);
+            return 0;
+        }
+        int n = 0;
+        for (Long l : keys) {
+            int n2;
+            int n3 = Clipboard.kx(l);
+            if (Clipboard.partAt(integratedCircuit, n3, n2 = Clipboard.ky(l)) == null) continue;
+            integratedCircuit.removePart(n3, n2);
+            ++n;
+        }
+        this.selected.clear();
+        if (n == 0) {
+            this.say(Lang.t("st.copy_empty"), true);
+            return 0;
+        }
+        integratedCircuit.refreshErrors();
+        Sync.toServer(this.tile, integratedCircuit);
+        this.undo.commitIfChanged(integratedCircuit);
+        this.say(Lang.t("st.deleted", String.valueOf(n)));
+        return n;
     }
 
     private static boolean isBundledCable(IntegratedCircuit integratedCircuit, int n, int n2) {
@@ -441,6 +785,12 @@ extends GuiICWorkbench {
             this.pasteMode = false;
             return;
         }
+        // 0.3.0: a staged edit is still converging - applying another one now
+        // would race its second phase.
+        if (Sync.busy()) {
+            this.say(Lang.t("st.busy"), true);
+            return;
+        }
         if (n < 0 || n2 < 0) {
             this.say(Lang.t("st.paste_out"), true);
             return;
@@ -450,6 +800,16 @@ extends GuiICWorkbench {
         int n4 = n2 + this.clip.height();
         boolean bl2 = bl = n3 > size.width() || n4 > size.height();
         if (bl) {
+            // 0.2.9: a board growth can only reach the server through a whole-circuit
+            // desc (case 5), and the server throws those away while no blueprint is
+            // inserted. Growing anyway would desync the sizes: the server keeps the
+            // old smaller board and every op that lands past its edge trips
+            // assertCoords, which aborts the whole IC stream mid-way. Refuse cleanly.
+            if (!this.tile.hasBP()) {
+                this.pasteMode = false;
+                this.say(Lang.t("st.no_bp_grow"), true);
+                return;
+            }
             integratedCircuit.size_$eq(new Size(Math.max(size.width(), n3), Math.max(size.height(), n4)));
         }
         int n5 = this.clip.stamp(integratedCircuit, n, n2);
@@ -479,32 +839,25 @@ extends GuiICWorkbench {
         if (integratedCircuit == null) {
             return;
         }
+        // 0.4.3: same funnel as the vanilla-eraser marquee (deleteKeys).
         if (this.selected.isEmpty()) {
             this.say(Lang.t("st.no_sel"), true);
             return;
         }
-        int n = 0;
-        for (Long l : new ArrayList<Long>(this.selected)) {
-            int n2;
-            int n3 = Clipboard.kx(l);
-            if (Clipboard.partAt(integratedCircuit, n3, n2 = Clipboard.ky(l)) == null) continue;
-            integratedCircuit.removePart(n3, n2);
-            ++n;
-        }
-        this.selected.clear();
-        if (n == 0) {
-            this.say(Lang.t("st.copy_empty"), true);
-            return;
-        }
-        integratedCircuit.refreshErrors();
-        Sync.toServer(this.tile, integratedCircuit);
-        this.undo.commitIfChanged(integratedCircuit);
-        this.say(Lang.t("st.deleted", String.valueOf(n)));
+        this.deleteKeys(new ArrayList<Long>(this.selected));
     }
 
     private void doUndo() {
         IntegratedCircuit integratedCircuit = this.ic();
-        if (integratedCircuit == null || !this.undo.undo(integratedCircuit, this.tile)) {
+        if (integratedCircuit == null) {
+            return;
+        }
+        // 0.3.0: refuse while a staged edit is still converging.
+        if (Sync.busy()) {
+            this.say(Lang.t("st.busy"), true);
+            return;
+        }
+        if (!this.undo.undo(integratedCircuit, this.tile)) {
             this.say(Lang.t("st.no_undo"), true);
             return;
         }
@@ -514,7 +867,15 @@ extends GuiICWorkbench {
 
     private void doRedo() {
         IntegratedCircuit integratedCircuit = this.ic();
-        if (integratedCircuit == null || !this.undo.redo(integratedCircuit, this.tile)) {
+        if (integratedCircuit == null) {
+            return;
+        }
+        // 0.3.0: refuse while a staged edit is still converging.
+        if (Sync.busy()) {
+            this.say(Lang.t("st.busy"), true);
+            return;
+        }
+        if (!this.undo.redo(integratedCircuit, this.tile)) {
             this.say(Lang.t("st.no_redo"), true);
             return;
         }
@@ -526,7 +887,11 @@ extends GuiICWorkbench {
         this.selected.clear();
         this.pasteMode = false;
         IntegratedCircuit integratedCircuit = this.ic();
-        if (integratedCircuit != null) {
+        if (integratedCircuit != null && !Sync.busy()) {
+            // While a staged edit is converging the board is deliberately rolled
+            // back to its pre-edit state; committing that would corrupt the
+            // undo stack. The pump's echo freeze ends with a normal commit that
+            // records the finished edit instead.
             integratedCircuit.refreshErrors();
             this.undo.commitIfChanged(integratedCircuit);
         }
@@ -756,9 +1121,35 @@ extends GuiICWorkbench {
             int n7 = Math.min(this.dragY0, this.dragY1);
             int n8 = Math.abs(this.dragX1 - this.dragX0);
             int n9 = Math.abs(this.dragY1 - this.dragY0);
-            Theme.fill(n, n7, n8, n9, 805358322);
-            Theme.border(n, n7, n8, n9, -16725262);
+            if (this.eraseDrag && !this.gestureAborted) {
+                // 0.4.5: an eraser drag used to give no clue about what it was about to
+                // delete (it just went away on release). Every cell in the box that
+                // holds a part now gets the danger tint, the box itself gets the danger
+                // border and the number of parts is printed inside it - so the marquee
+                // says exactly what the release will do, before you let go.
+                int n10 = this.tintEraseCells(integratedCircuit, n, n7, n + n8, n7 + n9);
+                Theme.border(n, n7, n8, n9, ERASE_BORDER);
+                this.drawEraseCount(n10, n, n7);
+            }
+            else {
+                Theme.fill(n, n7, n8, n9, 805358322);
+                Theme.border(n, n7, n8, n9, -16725262);
+            }
             return;
+        }
+        if (this.eraserMode() && !GuiICWbEx.shiftHeld() && !this.gestureAborted) {
+            // 0.4.5: with the eraser selected the part under the cursor is outlined in
+            // the same danger tint, so a single click is not a blind action either.
+            // 0.4.6: not while shift is held (that is the vanilla board pan).
+            int n11 = this.gridXAt(this.mouseX);
+            int n12 = this.gridYAt(this.mouseY);
+            if (Clipboard.partAt(integratedCircuit, n11, n12) != null) {
+                int n13 = this.rootXOfCell(n11);
+                int n14 = this.rootYOfCell(n12);
+                int n15 = (int)Math.round(d);
+                Theme.fill(n13, n14, n15, n15, ERASE_FILL);
+                Theme.border(n13, n14, n15, n15, ERASE_BORDER);
+            }
         }
         if (this.selected.isEmpty()) {
             return;
@@ -802,6 +1193,51 @@ extends GuiICWorkbench {
             int n20 = (int)Math.round(d);
             Theme.fill(n18, n19, n20, n20, 1342229234);
         }
+    }
+
+    /**
+     * 0.4.5: tint every cell inside a root-space rectangle that currently holds a part,
+     * and return how many that is.
+     *
+     * <p>The cells come from exactly the same grid conversion {@link #eraseRect} uses
+     * for the real deletion (and the loop is clamped to the board, so a drag that runs
+     * off the edge cannot walk a huge index range), which is what makes the preview
+     * trustworthy: what is tinted is precisely what the release removes.
+     */
+    private int tintEraseCells(IntegratedCircuit integratedCircuit, int rx0, int ry0, int rx1, int ry1) {
+        Size size = integratedCircuit.size();
+        int n = Math.max(0, this.gridXAt(Math.min(rx0, rx1)));
+        int n2 = Math.min(size.width() - 1, this.gridXAt(Math.max(rx0, rx1)));
+        int n3 = Math.max(0, this.gridYAt(Math.min(ry0, ry1)));
+        int n4 = Math.min(size.height() - 1, this.gridYAt(Math.max(ry0, ry1)));
+        int n5 = (int)Math.round(this.cellPx());
+        int n6 = 0;
+        for (int i = n3; i <= n4; ++i) {
+            for (int j = n; j <= n2; ++j) {
+                if (Clipboard.partAt(integratedCircuit, j, i) == null) continue;
+                Theme.fill(this.rootXOfCell(j), this.rootYOfCell(i), n5, n5, ERASE_FILL);
+                ++n6;
+            }
+        }
+        return n6;
+    }
+
+    /**
+     * 0.4.5: how many parts the eraser marquee is about to remove - printed above the
+     * box (or inside its top-left corner when there is no room above), so a drag that
+     * is about to take out half the board says so before the button comes up.
+     */
+    private void drawEraseCount(int n, int n2, int n3) {
+        if (n <= 0) {
+            return;
+        }
+        FontRenderer fontRenderer = this.fontRenderer();
+        if (fontRenderer == null) {
+            return;
+        }
+        String string = Lang.t("st.erase_preview", String.valueOf(n));
+        int n4 = n3 - 10 >= 1 ? n3 - 10 : n3 + 3;
+        fontRenderer.func_78276_b(string, n2 + 2, n4, ERASE_BORDER);
     }
 }
 

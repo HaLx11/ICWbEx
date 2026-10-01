@@ -15,6 +15,7 @@ package net.minecraft.nbt;
  *                                            NoSuchMethodError at runtime.
  *   func_74771_c  = getByte(String)B
  *   func_74779_i  = getString(String)Ljava/lang/String;
+ *   func_74778_a  = setString(String, String)V
  *   func_150295_c = getTagList(String, int)Lnet/minecraft/nbt/NBTTagList;
  */
 public class NBTTagCompound {
@@ -35,6 +36,9 @@ public class NBTTagCompound {
     public void func_74773_a(String key, byte[] value) {
     }
 
+    public void func_74778_a(String key, String value) {
+    }
+
     public int func_74762_e(String key) {
         return 0;
     }
@@ -44,6 +48,15 @@ public class NBTTagCompound {
     }
 
     public String func_74779_i(String key) {
+        return null;
+    }
+
+    /** 0.3.8 (Blueprints): setInteger(String, int)V - from the SRG member dump. */
+    public void func_74768_a(String key, int value) {
+    }
+
+    /** 0.3.8 (Blueprints dead-signal check): getByteArray(String)[B. */
+    public byte[] func_74770_j(String key) {
         return null;
     }
 }

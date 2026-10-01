@@ -46,6 +46,11 @@ public class GuiICWorkbench {
         return false;
     }
 
+    // --- added for 0.4.5: the wheel has to keep working while ICWbEx holds the mouse
+    public boolean mouseScrolled_Impl(Point point, int amount, boolean state) {
+        return false;
+    }
+
     public boolean keyPressed_Impl(char c, int key, boolean state) {
         return false;
     }

@@ -48,4 +48,14 @@ public class PrefboardNode implements TNode {
     public CircuitOp currentOp() {
         return null;
     }
+
+    // --- added for 0.4.5 (zoom while the eraser has taken the mouse); descriptors
+    // verified via javap on PR 4.12.44. Vanilla drives these from its own
+    // mouseScrolled_Impl, which needs the cursor converted through two coordinate
+    // spaces - calling the node's own scale steps avoids that entirely.
+    public void incScale() {
+    }
+
+    public void decScale() {
+    }
 }

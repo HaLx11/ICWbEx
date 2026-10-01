@@ -124,6 +124,21 @@ public final class Lang {
     }
 
     public static String t(String string) {
+        // 0.3.1: keep Sync's two-phase commit alive no matter which screen is in
+        // front. The blueprint panel (GuiBlueprint) is a GuiScreen of its own, so
+        // GuiICWbEx.frameUpdate - the only place that used to drive Sync.pump() -
+        // stops running while it is open, and a staged edit was left half-applied
+        // (client rolled back, server trimmed, second phase never coming: cable
+        // without components, or a load that appears to do nothing at all).
+        // Every ICWbEx screen renders its text through Lang.t, so calling the pump
+        // here makes the panel a valid driver too. It is a single volatile read
+        // while no edit is waiting (GuiBlueprint calls t() ~5x per frame).
+        // 0.3.7: the same place is the earliest moment an ICWbEx screen is on
+        // screen, i.e. the last moment before the player could overwrite a
+        // blueprint - so the one backup copy per session is taken from here too.
+        // Both calls are a single flag check once they have run.
+        Replay.backupBlueprintsOnce();
+        Sync.pump();
         String string2 = Lang.gameText(string);
         if (string2 != null) {
             return string2;
@@ -173,6 +188,10 @@ public final class Lang {
         Lang.put("share.reason.bad", "\u5185\u5bb9\u635f\u574f", "corrupted");
         Lang.put("share.reason.toolong", "\u592a\u957f\u4e86", "too long");
         Lang.put("st.bp_dead", "\u6709 %1$s \u6839\u6ca1\u901a\u7535\u7684\u96c6\u675f\u7f06\uff0c\u5220\u6389\u6216\u901a\u7535\u540e\u518d\u8bd5", "%1$s unpowered bundled cable(s) - remove or power them first");
+        Lang.put("st.bp_overwrite", "\u300a%1$s\u300b\u91cc\u88c5\u7684\u662f\u53e6\u4e00\u5757\u677f\uff08%2$s\uff09\uff0c\u800c\u5f53\u524d\u5de5\u4f5c\u53f0\u662f\u300a%3$s\u300b\u3002\u786e\u5b9e\u8981\u8986\u76d6\u5c31\u518d\u6309\u4e00\u6b21\u300c\u4fdd\u5b58\u300d", "%1$s holds a different board (%2$s) while the workbench holds %3$s - press Save again to overwrite it anyway");
+        Lang.put("st.newic", "\u5df2\u65b0\u5efa\u7a7a\u767d IC\uff1a\u300a%1$s\u300b %2$sx%3$s", "new blank IC: %1$s %2$sx%3$s");
+        Lang.put("st.newic_nobp", "\u9700\u8981\u5148\u63d2\u5165 IC \u84dd\u56fe/\u677f\u624d\u80fd\u65b0\u5efa\u6216\u6539\u5c3a\u5bf8", "insert an IC blueprint/plate first - the server drops whole-board updates without one");
+        Lang.put("st.no_bp_size", "\u76ee\u6807\u84dd\u56fe\u662f %1$sx%2$s\uff0c\u6539\u5c3a\u5bf8\u9700\u8981\u5148\u63d2\u5165 IC \u84dd\u56fe/\u677f\uff08\u5426\u5219\u670d\u52a1\u5668\u4f1a\u4e22\u5f03\u6574\u677f\u540c\u6b65\uff0c\u4e24\u8fb9\u4f1a\u5206\u53c9\uff09", "the blueprint is %1$sx%2$s - insert an IC blueprint/plate to change the board size (the server drops whole-board updates without one)");
         Lang.put("bp.title", "\u84dd\u56fe", "Blueprints");
         Lang.put("bp.dir", "\u5b58\u6863\u76ee\u5f55\uff1a.minecraft/blueprints/", "folder: .minecraft/blueprints/");
         Lang.put("bp.save", "\u4fdd\u5b58", "Save");
@@ -189,7 +208,7 @@ public final class Lang {
         Lang.put("bp.wheel", "\u6eda\u8f6e\u7ffb\u5217\u8868", "use the wheel to scroll the list");
         Lang.put("bp.del_twice", "\u518d\u70b9\u4e00\u6b21\u300c\u5220\u9664\u300d\u786e\u8ba4\u8981\u5220\u6389 %1$s", "click Del again to really delete %1$s");
         Lang.put("bp.pick_row", "\u5148\u5728\u5217\u8868\u91cc\u70b9\u4e00\u4e2a\u84dd\u56fe", "click a blueprint in the list first");
-        Lang.put("help.title", "IC \u5de5\u4f5c\u53f0\u589e\u5f3a\u7248 v0.2.8 \u00b7 \u64cd\u4f5c\u8bf4\u660e", "IC Workbench Ex v0.2.8 - controls");
+        Lang.put("help.title", "IC \u5de5\u4f5c\u53f0\u589e\u5f3a\u7248 v0.2.9 \u00b7 \u64cd\u4f5c\u8bf4\u660e", "IC Workbench Ex v0.2.9 - controls");
         Lang.put("help.body", "\u3010\u57fa\u672c\u64cd\u4f5c\u3011\n  \u5de6\u952e\u70b9\u753b\u677f = \u653e\u4e0b\u624b\u4e0a\u7684\u5143\u4ef6\n  \u53f3\u952e\u70b9\u5143\u4ef6 = \u6253\u5f00\u5b83\u7684\u8bbe\u7f6e\n  \u4e2d\u952e\u70b9\u5143\u4ef6 = \u5438\u53d6\u5b83\uff08\u624b\u4e0a\u6362\u6210\u5b83\uff09\n  \u6eda\u8f6e = \u7f29\u653e\u753b\u677f\n\u3010\u6846\u9009 / \u590d\u5236\u3011\n  \u6309\u4f4f Ctrl \u62d6\u52a8 = \u6846\u4f4f\u4e00\u7247\uff08Shift \u8ffd\u52a0\uff09\n  Ctrl+C \u590d\u5236\u3000Ctrl+X \u526a\u5207\u3000Ctrl+V \u7c98\u8d34\n  \u7c98\u8d34\u65f6\u5de6\u952e\u843d\u4f4d\uff0c\u53f3\u952e\u6216 Esc \u53d6\u6d88\n  \u7c98\u8d34\u4e0d\u4f1a\u8986\u76d6\u96c6\u675f\u7ebf\u7f06\u6240\u5728\u683c\n  Del \u5220\u9664\u9009\u4e2d\u3000Ctrl+A \u5168\u9009\n  Ctrl+Z \u64a4\u9500\u3000Ctrl+Y \u91cd\u505a\n\u3010\u84dd\u56fe\u3011\n  \u53f3\u4e0a\u89d2\u300c\u84dd\u56fe\u300d\u6309\u94ae\n  \u8f93\u5165\u540d\u5b57 = \u4fdd\u5b58\uff1b\u5217\u8868\u5355\u51fb\u9009\u4e2d\uff0c\u518d\u70b9\u4e00\u6b21\u8f7d\u5165\n  \u300c\u5220\u9664\u300d\u8981\u70b9\u4e24\u6b21\uff1b\u540d\u5b57\u53ef\u7528\u4e2d\u6587\n  \u300c\u590d\u5236\u5206\u4eab\u4e32\u300d\u628a\u7535\u8def\u538b\u6210\u4e00\u4e32\u5b57\u7b26\uff08\u526a\u8d34\u677f\uff09\uff0c\n  \u53d1\u7ed9\u522b\u4eba\u540e\u5bf9\u65b9\u70b9\u300c\u4ece\u526a\u8d34\u677f\u8f7d\u5165\u300d\u5c31\u80fd\u590d\u539f\n\u3010Esc \u9010\u5c42\u9000\u51fa\u3011\n  \u5f00\u7740\u672c\u8bf4\u660e = \u5173\u8bf4\u660e\n  \u6b63\u5728\u7c98\u8d34 = \u53d6\u6d88\u7c98\u8d34\n  \u6846\u4f4f\u4e86\u4e00\u7247 = \u6e05\u7a7a\u9009\u62e9\n  \u90fd\u6ca1\u6709 = \u5173\u95ed\u754c\u9762", "[basics]\n  LMB on the board = place the held part\n  RMB on a part = open its settings\n  MMB on a part = pick it up\n  wheel = zoom the board\n[select / copy]\n  hold Ctrl and drag = marquee (Shift adds)\n  Ctrl+C copy, Ctrl+X cut, Ctrl+V paste\n  while pasting: LMB places, RMB or Esc cancels\n  paste never overwrites cells holding bundled cables\n  Del delete, Ctrl+A select all\n  Ctrl+Z undo, Ctrl+Y redo\n[blueprints]\n  the button at the top right\n  type a name = Save\n  click a row to select, click again to load\n  Delete asks twice; names may be CJK\n  Copy code -> a short text string in the clipboard;\n  the other side pastes and hits Paste code\n[Esc steps back one layer]\n  reading this page = close it\n  pasting = cancel the paste\n  a marquee result = clear the selection\n  none of the above = close the GUI");
         Lang.put("help.foot", "H \u6216 Esc \u5173\u95ed\u672c\u9875", "H or Esc closes this page");
         Lang.put("bp.err", "\u5931\u8d25\uff1a%1$s", "failed: %1$s");
@@ -204,7 +223,12 @@ public final class Lang {
         Lang.put("st.pasted", "\u5df2\u7c98\u8d34 %1$s \u4e2a\u5143\u4ef6", "pasted %1$s parts");
         Lang.put("st.paste_none", "\u8fd9\u91cc\u653e\u4e0d\u4e0b\u4efb\u4f55\u5143\u4ef6", "nothing fits here");
         Lang.put("st.paste_out", "\u843d\u4e86\u677f\u5916\uff0c\u5148\u6269\u677f\u518d\u8bf4", "outside the board");
+        Lang.put("st.no_bp_grow", "\u8fd9\u6b21\u7c98\u8d34\u9700\u8981\u6269\u677f\uff0c\u4f46\u5de5\u4f5c\u53f0\u4e0a\u6ca1\u6709\u84dd\u56fe\u2014\u2014\u5148\u653e\u4e00\u5f20\u84dd\u56fe\u518d\u8d34", "this paste would grow the board, but no blueprint is inserted - place one first");
         Lang.put("st.grew", "\u5df2\u8d34\u4e0a %1$s \u4e2a\u5143\u4ef6\uff0c\u5e76\u628a\u677f\u5b50\u6269\u5230 %2$s x %3$s", "pasted %1$s parts, board grown to %2$s x %3$s");
         Lang.put("st.paste_skip", "\u5df2\u4fdd\u62a4 %2$s \u4e2a\u96c6\u675f\u7ebf\u7f06\u6240\u5728\u683c\u4e0d\u88ab\u8986\u76d6\uff08\u8d34\u4e0a %1$s \u4e2a\u5143\u4ef6\uff09", "%2$s bundled-cable cell(s) protected from overwrite (%1$s parts pasted)");
+        Lang.put("st.busy", "\u4e0a\u4e00\u6b65\u8fd8\u5728\u540c\u6b65\uff0c\u7a0d\u5019\u4e00\u79d2\u518d\u64cd\u4f5c", "still syncing the last edit - try again in a moment");
+        Lang.put("st.marquee_moved", "\u753b\u677f\u79fb\u52a8\u6216\u7f29\u653e\u4e86\uff0c\u5df2\u53d6\u6d88\u8fd9\u6b21\u6846\u9009\uff08\u907f\u514d\u5220\u9519\uff09", "the board was panned or zoomed - the marquee was cancelled so it cannot delete the wrong parts");
+        Lang.put("st.erase_preview", "\u5c06\u5220\u9664 %1$s \u4e2a\u5143\u4ef6", "%1$s part(s) will be deleted");
+        Lang.put("help.title", "IC \u5de5\u4f5c\u53f0\u589e\u5f3a\u7248 v0.4.6 \u00b7 \u64cd\u4f5c\u8bf4\u660e", "IC Workbench Ex v0.4.6 - controls");
     }
 }
