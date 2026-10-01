@@ -32,6 +32,7 @@
 ## 已知问题
 
 - **集束线缆不支持复制**：框选与复制会自动跳过集束线缆，粘贴也不会覆盖它们所在的格子。原因是经由剪贴板/整板描述包同步集束线缆会触发 ProjectRed 的 null-signal bug（空闲的全零信号在服务端被解析成 null 并导致崩溃），因此只能刻意绕开。若上游修复后，这一限制有望解除。
+- **日志里的 client part stream couldnt find part 是正常现象**：由 ProjectRed 自己打印，出现在"某个元件刚被删除、而服务器同一 tick 仍在为它发状态帧"的瞬间。只要后面没有紧跟 Invalid gate subID: 0，它就是无害的协议噪音。
 
 ## 开发方式 / Development
 
