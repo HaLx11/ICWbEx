@@ -10,7 +10,6 @@
 - **框选与剪贴板**：Ctrl+拖拽框选（Shift 追加），Ctrl+C / X / V 复制、剪切、粘贴；粘贴时自动保护集束线缆所在的格子。Marquee select, copy/cut/paste, bundled-cable cells protected on paste.
 - **撤销 / 重做**：Ctrl+Z / Ctrl+Y，与服务器同步安全。Undo/redo.
 - **中键拾取**：对着元件按中键直接拿起它。Middle-click pick-part.
-- **安全同步（0.2.8）**：全零信号的集束线缆不再在整板描述包里被服务端解析成 null（旧版会 NPE）；任何同步失败都会重置半写的流缓冲并打印完整堆栈，绝不污染服务器。
 
 ## 安装 / Install
 
