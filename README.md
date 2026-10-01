@@ -14,7 +14,7 @@
 ## 安装 / Install
 
 1. GTNH 1.7.10 实例（Java 17+ 启动）。
-2. 把 `ICWbEx-0.2.8.jar` 放进 `.minecraft/mods/`。仅客户端；服务器不装。
+2. 把 `ICWbEx-x.x.x.jar` 放进 `.minecraft/mods/`。仅客户端；服务器不装。
 3. 需要 ProjectRed（在 `ProjRed-4.12.44-GTNH` 上验证）+ MrTJPCore。
 
 ## 用法 / Usage
