@@ -63,6 +63,12 @@ public final class Sync {
     private static volatile int pendStage;
     private static volatile List<int[]> pendRemovals;
     private static volatile boolean pendResized;
+    /**
+     * 0.4.8: 这次提交发的是「完整板 desc」而不是「空板 desc」。
+     * 只有"只是改名 + 目标板不含集束缆"才成立 —— 那种情况下服务端一次拿到完整状态，
+     * 客户端回显也是完整板，不会经历"先空一下、再一个个长出来"。
+     */
+    private static volatile boolean pendFullDesc;
     private static volatile String pendName;
     private static volatile int pendW;
     private static volatile int pendH;
@@ -367,6 +373,28 @@ public final class Sync {
         return pendTarget != null || pendNext != null;
     }
 
+    /** 0.4.8: push() 发出整板 desc 之后的静默窗口（回显 + 看护）。 */
+    private static final long PUSH_SETTLE_MS = 1200L;
+
+    /** 0.4.8: 最近一次 push() 的时刻，用来补上 busy() 看不见的那一段。 */
+    private static volatile long lastPushAt;
+
+    /**
+     * 0.4.8：比 {@link #busy()} 更宽的"正在落地"判据。
+     *
+     * <p>{@code busy()} 只看 {@code pendTarget}/{@code pendNext}，那只覆盖<b>两阶段提交</b>。
+     * 而载入蓝图时如果只是改名（或 before 未知），走的是 {@code push()} —— 它压根不设
+     * pendTarget，所以 {@code busy()} 当场就是 false：玩家按下 Esc 直接退出，而此时
+     * 整板 desc 还在路上，重进时看到的就是"板子过一会才有东西"。
+     *
+     * <p>这里把 push 之后的回显窗口也算进来。判据只用于**拦一下退出**，
+     * 不参与同步逻辑，所以故意取一个偏保守的固定值。
+     */
+    public static boolean settling() {
+        long now = System.currentTimeMillis();
+        return busy() || now < echoHoldUntil || now < lastPushAt + PUSH_SETTLE_MS;
+    }
+
     // ---- 0.4.5 keeping the diff base honest ---------------------------------
     //
     // Every vanilla tool the mod does not take over writes through the SERVER: the op
@@ -496,18 +524,33 @@ public final class Sync {
         pendStage = 2;
         try {
             if (resized) {
-                // A blank desc is the only channel for the board size; it also empties
-                // the server. hasBP was checked by the GUI before the edit
-                // (st.no_bp_grow), so the server will honour it.
-                IntegratedCircuit blank = new IntegratedCircuit();
-                blank.name_$eq(pendName);
-                blank.size_$eq(new Size(pendW, pendH));
-                System.out.println("[ICWbEx] phase1b: blank desc \"" + pendName + "\" " + pendW + "x" + pendH);
-                tile.sendNewICToServer(blank);
-                markEchoRebase();
-                NBTTagCompound emptyBase = new NBTTagCompound();
-                blank.save(emptyBase);
-                pendBase = emptyBase;
+                if (pendFullDesc) {
+                    // 0.4.8：只是**改名**，且目标板不含集束缆。把整块板连名字一起发过去：
+                    // 服务端一次拿到完整状态，回显给客户端的也是完整板 —— 不会出现
+                    // "板子空一下、然后零件一个个长出来"。这也是 phase 2 不需要重放的原因。
+                    IntegratedCircuit full = new IntegratedCircuit();
+                    full.load(pendTarget);
+                    System.out.println("[ICWbEx] phase1b: whole-board desc for a rename \""
+                        + pendName + "\" " + pendW + "x" + pendH);
+                    tile.sendNewICToServer(full);
+                    markEchoRebase();
+                    pendBase = pendTarget;      // 服务端此刻 == target，phase 2 无差异可发
+                }
+                else {
+                    // 改尺寸（或目标板含集束缆）：只能发空板，再由 phase 2 重放。
+                    // A blank desc is the only channel for the board size; it also empties
+                    // the server. hasBP was checked by the GUI before the edit
+                    // (st.no_bp_grow), so the server will honour it.
+                    IntegratedCircuit blank = new IntegratedCircuit();
+                    blank.name_$eq(pendName);
+                    blank.size_$eq(new Size(pendW, pendH));
+                    System.out.println("[ICWbEx] phase1b: blank desc \"" + pendName + "\" " + pendW + "x" + pendH);
+                    tile.sendNewICToServer(blank);
+                    markEchoRebase();
+                    NBTTagCompound emptyBase = new NBTTagCompound();
+                    blank.save(emptyBase);
+                    pendBase = emptyBase;
+                }
             }
             else {
                 System.out.println("[ICWbEx] phase1b: " + (removals == null ? 0 : removals.size()) + " removals");
@@ -539,6 +582,7 @@ public final class Sync {
         pendBase = null;
         pendStage = 0;
         pendResized = false;
+        pendFullDesc = false;
         try {
             System.out.println("[ICWbEx] phase2: apply " + sigOf(target) + " (base " + sigOf(base) + ")");
             ic.load(target);
@@ -592,6 +636,8 @@ public final class Sync {
         pendBase = null;
         pendRemovals = null;
         pendStage = 0;
+        pendResized = false;
+        pendFullDesc = false;
         if (tile == null) {
             return;
         }
@@ -700,9 +746,20 @@ public final class Sync {
         NBTTagCompound target = Replay.snapPure(ic);
         List<int[]> removals = Replay.planRemovals(before, ic);
         boolean resized = Replay.sizeDiffers(before, ic);
+        // 0.4.8：板名**只能**通过整板 desc 送到服务端（runPhase1 里那行
+        // blank.name_$eq(pendName)）。而 desc 原来只在"尺寸变了"时才发，
+        // 所以两块同为 16x16 的蓝图互切时，服务端一直保留着**最早那个名字**。
+        // 危害不是界面显示 —— ItemICBlueprint.saveIC() 把 ic.name() 写进物品的
+        // "icname" 标签，于是从工作台上取下来的蓝图物品永远叫旧名。
+        // 把"改名"当成"改尺寸"同等对待：发空白 desc（它同时带 name 和 size），
+        // 由 phase 2 重放全部零件。tile.hasBP() 为假时服务器会静默丢弃 desc，
+        // 那种情况下宁可名字不同步，也不能把板子清空。
+        boolean renamed = !Replay.sameName(before, ic);
+        boolean needDesc = resized || (renamed && tile.hasBP());
         System.out.println("[ICWbEx] stageEdit: before " + sigOf(before) + " -> target "
-            + sigOf(ic) + " removals=" + removals.size() + " resized=" + resized);
-        if (removals.isEmpty() && !resized) {
+            + sigOf(ic) + " removals=" + removals.size() + " resized=" + resized
+            + " renamed=" + renamed + " desc=" + needDesc);
+        if (removals.isEmpty() && !needDesc) {
             // Pure addition / no change to existing cells: optimistic is safe.
             try {
                 ic.load(target);
@@ -727,6 +784,9 @@ public final class Sync {
         String targetName = ic.name();
         int tW = ic.size().width();
         int tH = ic.size().height();
+        // 必须在回滚**之前**判断：ic.load(before) 之后 ic 就是旧板了，
+        // 那时再问「目标板有没有集束缆」问的是错误的对象。
+        boolean targetHasCable = Replay.hasBundledCable(ic);
         try {
             ic.load(before);
             ic.refreshErrors();
@@ -740,7 +800,7 @@ public final class Sync {
         // client copy disappear exactly while the server's last frames for that very
         // part are in flight, and PR's readPartStream fallback turns them into a gate
         // with subID 0 -> "Invalid gate subID: 0" -> disconnect. See Replay.sendDegrade.
-        List<int[]> danger = Replay.dangerousCells(before, resized ? Replay.allCells(before) : removals);
+        List<int[]> danger = Replay.dangerousCells(before, needDesc ? Replay.allCells(before) : removals);
         if (!danger.isEmpty()) {
             try {
                 Replay.sendDegrade(tile, danger);
@@ -756,9 +816,17 @@ public final class Sync {
         pendTile = tile;
         pendIc = ic;
         pendTarget = target;
-        pendBase = resized ? null : before;
+        // 0.4.8：phase 1 发的是哪一种 desc，决定 phase 2 的基准 ——
+        //  · 完整板 desc（只是改名、且没有集束缆）⇒ 服务端此刻已经是 target，
+        //    基准就用 target，phase 2 只会补真正的差异（通常一个包都不发）；
+        //  · 空板 desc（改尺寸 / 目标板含集束缆）⇒ 服务端是空的，
+        //    基准必须是 null，phase 2 要把零件全部重放。
+        // 用 null 一刀切会让「完整 desc 刚落地又被全量重放一遍」，既浪费又更容易闪。
+        boolean fullDesc = !resized && renamed && tile.hasBP() && !targetHasCable;
+        pendBase = fullDesc ? target : (needDesc ? null : before);
         pendRemovals = removals;
-        pendResized = resized;
+        pendResized = needDesc;
+        pendFullDesc = fullDesc;
         pendName = targetName;
         pendW = tW;
         pendH = tH;
@@ -812,7 +880,10 @@ public final class Sync {
 
         NBTTagCompound before = tile == lastTile ? lastSnap : null;
         boolean needSize = before == null || Replay.sizeDiffers(before, ic);
-        boolean descFirst = needSize && tile.hasBP();
+        // 0.4.8: 名字也走整板 desc。这一条以前漏了 —— stageEdit 的 renamed 判断只在
+        // 两阶段分支生效，而 before == null 时会直接落到这里，名字照样送不出去。
+        boolean needName = before == null || !Replay.sameName(before, ic);
+        boolean descFirst = (needSize || needName) && tile.hasBP();
 
         System.out.println("[ICWbEx] push: before " + sigOf(before) + " board " + sigOf(ic)
             + " sizeFix=" + needSize + " hasBP=" + tile.hasBP());
@@ -847,5 +918,9 @@ public final class Sync {
         }
         lastSnap = UndoBuffer.snap(ic);
         lastTile = tile;
+        // 0.4.8: 这条路径（push）用的是整板 desc / op 流，没有 pendTarget 那一套，
+        // 所以 busy() 看不见它 —— 但服务端回显、看护窗口都还要跑一会儿。
+        // 记下时刻，好在 settling() 里把它算进"正在落地"。
+        lastPushAt = System.currentTimeMillis();
     }
 }

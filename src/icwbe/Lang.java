@@ -235,6 +235,7 @@ public final class Lang {
         Lang.put("st.io_no_fit", "\u8981\u8ba9 %1$s \u4e2a\u51fa\u5165\u53e3\u90fd\u843d\u5728\u8fb9\u754c\u4e0a\u5c31\u653e\u4e0d\u4e0b\u8fd9\u5757\u5185\u5bb9\uff08\u677f\u5b50\u88c5\u4e0d\u4e86\uff09\uff0c\u5df2\u53d6\u6d88\u8fd9\u6b21\u7c98\u8d34", "%1$s IO gate(s) would have to be on the border, but the clipboard cannot fit inside this board like that - paste cancelled");
         Lang.put("st.paste_skip", "\u5df2\u4fdd\u62a4 %2$s \u4e2a\u96c6\u675f\u7ebf\u7f06\u6240\u5728\u683c\u4e0d\u88ab\u8986\u76d6\uff08\u8d34\u4e0a %1$s \u4e2a\u5143\u4ef6\uff09", "%2$s bundled-cable cell(s) protected from overwrite (%1$s parts pasted)");
         Lang.put("st.busy", "\u4e0a\u4e00\u6b65\u8fd8\u5728\u540c\u6b65\uff0c\u7a0d\u5019\u4e00\u79d2\u518d\u64cd\u4f5c", "still syncing the last edit - try again in a moment");
+        Lang.put("st.bp_cooldown", "\u5207\u6362\u592a\u9891\u7e41\uff0c\u7a0d\u7b49\u534a\u79d2\u518d\u8f7d\u5165", "switching too fast - wait half a second");
         Lang.put("st.marquee_moved", "\u753b\u677f\u79fb\u52a8\u6216\u7f29\u653e\u4e86\uff0c\u5df2\u53d6\u6d88\u8fd9\u6b21\u6846\u9009\uff08\u907f\u514d\u5220\u9519\uff09", "the board was panned or zoomed - the marquee was cancelled so it cannot delete the wrong parts");
         Lang.put("st.erase_preview", "\u5c06\u5220\u9664 %1$s \u4e2a\u5143\u4ef6", "%1$s part(s) will be deleted");
         Lang.put("help.title", "IC \u5de5\u4f5c\u53f0\u589e\u5f3a\u7248 v0.4.7 \u00b7 \u64cd\u4f5c\u8bf4\u660e", "IC Workbench Ex v0.4.7 - controls");

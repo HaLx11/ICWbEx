@@ -594,11 +594,63 @@ public final class Blueprints {
 
     // ------------------------------------------------------------ 读
 
+    /**
+     * 0.4.8：两次载入之间的最小间隔。
+     *
+     * <p>切换蓝图会走两阶段提交（约 400ms 才落地）。在这段时间里连着点第二个蓝图，
+     * 会让上一份提交还在排队时又压进来一次 —— 那是 0.4.0~0.4.2 一整串"名字与内容错配"、
+     * "排队把回滚板铺回去"的事故来源。半秒冷却把这类手速挡在门外，
+     * 也让"取下来的物品名字是旧的"这个窗口变得很难踩到。
+     */
+    private static final long LOAD_COOLDOWN_MS = 500L;
+
+    /** 上次载入的开始时刻（客户端渲染线程，单线程写，volatile 只为稳妥）。 */
+    private static volatile long lastLoadMs;
+
+    /**
+     * 上一次载入发生在哪个工作台上。
+     *
+     * <p>0.4.8：冷却必须按工作台算。原来只有一个全局时间戳，于是「在工作台 A 载入，
+     * 走到工作台 B 再载入」会被 A 留下的时间戳拦住 —— 玩家眼里就是莫名其妙点了没反应。
+     * 换了一台工作台就不该继承上一台的冷却。
+     */
+    private static volatile TileICWorkbench lastLoadTile;
+
     /** 加载蓝图文件到电路并同步给服务端。返回 null 表示成功，否则是错误消息。 */
     public static String load(String name, IntegratedCircuit ic, TileICWorkbench tile) {
+        long now = System.currentTimeMillis();
+        if (tile == lastLoadTile && now - lastLoadMs < LOAD_COOLDOWN_MS) {
+            return Lang.t("st.bp_cooldown");
+        }
+        lastLoadTile = tile;
+        lastLoadMs = now;
         NBTTagCompound t = read(name);
         if (t == null) {
             return "cannot read " + sanitize(name) + EXT;
+        }
+        // 0.4.8：文件名就是这份蓝图的名字，**在应用之前**钉进 NBT。
+        //
+        // 以前只在 apply 之后由 Share.loadNamed 再改一次板名、再调一次 toServer
+        // （见 Sync.stageEdit 里 "call 2" 的注释）。问题在于 call 1 已经先把
+        // 「名字还没改的板」park 成 pendTarget 了：一旦 call 2 被判定成回声
+        // （isRollbackEcho，或 before == null 的失败路径），Sync.foldName 就会
+        // 拿一块**旧板**的 name 去覆盖 pendTarget —— 表现正是「载入 A，名字却是 B」。
+        // 先把名字钉对，call 1 送出去的就是正确名字，foldName 无论怎么写都不会错。
+        if (name != null && name.length() > 0) {
+            try {
+                t.func_74778_a("name", name);
+            }
+            catch (Throwable ignored) {
+                // 名称只是个标签，写不进去也不能挡住应用
+            }
+        }
+        // 0.4.8 诊断：确认传进来的名字、文件里原本的名字、以及钉进去之后的名字。
+        // 排查"载入后名字不变"时只需要这一行。
+        try {
+            System.out.println("[ICWbEx] bp.load arg=\"" + name + "\" tagNow=\""
+                + t.func_74779_i("name") + "\"");
+        }
+        catch (Throwable ignored) {
         }
         return apply(t, ic, tile);
     }
@@ -647,8 +699,30 @@ public final class Blueprints {
             return Lang.t("st.bp_dead", String.valueOf(dead));
         }
         try {
+            // 0.4.8：分享串里的名字来自发送方，可能含空格、括号、加号等字符，
+            // 而落盘时 save() 会把名字换成 sanitize(name)（见本类第 212 行）。
+            // 结果就是「板子上是原名、文件里是清洗名」：导入那一刻看着没问题，
+            // 下次从列表载入（load 钉的是文件名）名字就"变"成了带下划线的版本 ——
+            // 这正是分享串特有的名字错配。应用之前统一一次，两边永远是同一个字符串。
+            // sanitize 是幂等的，文件载入这条路上什么都不做。
+            try {
+                String nm = t.func_74779_i("name");
+                String clean = sanitize(nm);       // 空名字在这里会变成 "untitled"
+                if (!clean.equals(nm)) {
+                    t.func_74778_a("name", clean);
+                }
+            }
+            catch (Throwable ignored) {
+            }
             ic.load(t);
             ic.refreshErrors();
+            // 0.4.8 诊断：应用之后板上真正生效的名字（load 会从 NBT 的 name 覆盖）。
+            try {
+                System.out.println("[ICWbEx] bp.apply tag=\"" + t.func_74779_i("name")
+                    + "\" -> ic.name=\"" + ic.name() + "\"");
+            }
+            catch (Throwable ignored) {
+            }
             Sync.toServer(tile, ic);
             return null;
         } catch (Throwable e) {

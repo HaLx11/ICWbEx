@@ -58,4 +58,14 @@ public class PrefboardNode implements TNode {
 
     public void decScale() {
     }
+
+    // --- added for 0.4.8 (zoom anchored on the cursor). incScale/decScale above are
+    // hard-wired to rescaleAt(frame().midPoint(), ...), so they can only zoom about the
+    // board's centre; rescaleAt takes the anchor directly.
+    // Descriptor verified via javap on PR 4.12.44-GTNH:
+    //   public void rescaleAt(mrtjp.core.vec.Point, double)
+    // NOTE the point is in the PARENT's coordinate space - rescaleAt internally does
+    // parent().convertPointTo(point, this).
+    public void rescaleAt(Point point, double scale) {
+    }
 }

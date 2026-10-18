@@ -51,7 +51,7 @@ OUT_DIR = os.path.join(HERE, "out")
 STUBSOUT = os.path.join(HERE, "build", "stubsout")
 CLASSES = os.path.join(HERE, "build", "out")
 
-NEW_VER = "0.4.7"
+NEW_VER = "0.4.8"
 OLD_VER = b"0.2.6"
 NEW_VER_B = NEW_VER.encode("ascii")
 
@@ -470,9 +470,14 @@ def assert_call_sites():
     # 0.4.5: the eraser has to keep two vanilla behaviours that taking the mouse away
     # from the prefboard would otherwise swallow - the wheel (zoom) and, when dragging,
     # any clue about what is about to be deleted.
-    if "mouseScrolled_Impl" not in gui or "incScale" not in gui or "decScale" not in gui:
+    # 0.4.8: zoom may be driven either by incScale/decScale (anchored on the board
+    # centre) or by rescaleAt (anchored on the cursor) - accept both, only insist that
+    # the wheel handler still zooms at all.
+    _zoom_ok = ("incScale" in gui and "decScale" in gui) or "rescaleAt" in gui
+    if "mouseScrolled_Impl" not in gui or not _zoom_ok:
         die("GuiICWbEx lost its mouseScrolled_Impl - selecting the eraser would kill "
-            "zoom again (0.4.5: zooming is exactly what you want while erasing).")
+            "zoom again (0.4.5: zooming is exactly what you want while erasing). "
+            "0.4.8: it may zoom via incScale/decScale or via rescaleAt.")
     if "tintEraseCells" not in gui or "st.erase_preview" not in gui:
         die("GuiICWbEx lost the eraser preview (tintEraseCells + its count) - the "
             "marquee would delete cells with no indication of which ones (0.4.5).")

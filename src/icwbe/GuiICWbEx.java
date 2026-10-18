@@ -87,6 +87,8 @@ extends GuiICWorkbench {
      */
     private static final int STATUS_TTL_BASE = 200;
     private static final int STATUS_TTL_BONUS_CAP = 500;
+    /** 0.4.8: Esc 在「提交中」最多被拦这么久；超时无条件放行，绝不让玩家被锁在界面里。 */
+    private static final long BUSY_ESCAPE_GRACE_MS = 2000L;
     /** at most this many extra fragments after the primary message. */
     private static final int STATUS_MAX_EXTRAS = 2;
     /** the vanilla machine title, which the header strip has to start after. */
@@ -138,6 +140,8 @@ extends GuiICWorkbench {
     private String status = "";
     private boolean statusIsError;
     private int statusTtl;
+    /** 0.4.8: 第一次因「提交中」拦下 Esc 的时刻；0 表示当前没在拦。 */
+    private long busyBlockSince;
     private boolean helpVisible;
     /**
      * 0.4.7: how far the controls page is scrolled, in lines. The page is built to fit
@@ -433,6 +437,12 @@ extends GuiICWorkbench {
         super.frameUpdate_Impl(point, f);
         ++this.tick;
         Sync.pump();
+        // 0.4.8: 同步一旦收口就把「拦 Esc」的计时清零。
+        // 少了这一句会出一个很隐蔽的 bug：第一次被拦时记下 t0，之后就再没人重置它；
+        // 等下一轮同步开始时 now - t0 早就超过宽限，于是**从第二次起拦截全部失效**。
+        if (!Sync.settling()) {
+            this.busyBlockSince = 0L;
+        }
         if (this.statusTtl > 0) {
             --this.statusTtl;
         }
@@ -622,12 +632,14 @@ extends GuiICWorkbench {
      * intercepting}) - picking the eraser used to swallow it, so a board could not be
      * zoomed while erasing, which is exactly when you want to zoom.
      *
-     * <p>Vanilla zooms by {@code PrefboardNode.mouseScrolled_Impl}, which needs the
-     * cursor converted through two coordinate spaces; here the zoom is driven through
-     * the node's own public {@code incScale}/{@code decScale} instead (same 0.2 step and
-     * the same 0.5-3.0 clamp as vanilla), anchored on the board frame - no conversion to
-     * get wrong. The event is only ours when the prefboard was switched off; otherwise
-     * the prefboard already handled it and this method is never reached.
+     * <p>0.4.8: the zoom is now <b>anchored on the cursor</b>. 0.4.5-0.4.7 called
+     * {@code incScale}/{@code decScale}, and those are hard-wired to
+     * {@code rescaleAt(frame().midPoint(), ...)} - i.e. the board frame's centre. That
+     * is why zooming felt like the whole board growing away from you instead of the
+     * spot under the pointer staying put. {@code PrefboardNode.rescaleAt(Point, double)}
+     * is public, so we can hand it the cursor instead; it expects the point in the
+     * <b>parent</b> coordinate space and does the rest (scale + position compensation).
+     * The wheel event arrives in screen/root space, hence the one conversion below.
      */
     public boolean mouseScrolled_Impl(Point point, int n, boolean bl) {
         // 0.4.7: while the controls page is up the wheel pages it. Checked before
@@ -645,12 +657,15 @@ extends GuiICWorkbench {
             return false;
         }
         try {
-            if (n > 0) {
-                prefboardNode.incScale();
+            TNode parent = prefboardNode.parent();
+            if (parent == null) {
+                return false;
             }
-            else {
-                prefboardNode.decScale();
-            }
+            // Same 0.2 step and 0.5-3.0 clamp as the vanilla incScale/decScale.
+            double next = Math.max(0.5, Math.min(3.0,
+                prefboardNode.scale() + (n > 0 ? 0.2 : -0.2)));
+            Point anchor = parent.convertPointFromScreen(point);
+            prefboardNode.rescaleAt(anchor, next);
         }
         catch (Throwable throwable) {
             return false;
@@ -748,6 +763,12 @@ extends GuiICWorkbench {
             return 0;
         }
         integratedCircuit.refreshErrors();
+        // 0.4.8: removePart 只清掉被删的那一格，**不会重算邻居的 connMap**。
+        // 少了这一步，旁边的线缆还记着"我连着它" —— 界面上线照旧画着，
+        // 同一个位置重新放一个零件也连不上（邻居的掩码仍指向旧的身份）。
+        // 退出工作台再进之所以能好，就是因为 PR 用整板 desc 重建了一遍、
+        // 把每个零件的连接掩码都重算了。这里直接把那次重建等价地做一次。
+        Replay.refreshLocal(integratedCircuit);
         Sync.toServer(this.tile, integratedCircuit);
         this.undo.commitIfChanged(integratedCircuit);
         this.say(Lang.t("st.deleted", String.valueOf(n)));
@@ -1182,6 +1203,29 @@ extends GuiICWorkbench {
     }
 
     public boolean keyPressed_Impl(char c, int n, boolean bl) {
+        // 0.4.8: 两阶段提交落地前不许关界面。玩家一关就会去把蓝图物品取下来，
+        // 而那一刻服务端还握着同步前的板子 —— 取下来的物品名字（icname）和内容
+        // 都还是旧的。提交通常 400ms 内收口，等一下就过去了。
+        //
+        // ⚠️ 必须有超时兜底：busy() 只看 pendTarget/pendNext 是否还挂着，而清掉它们
+        // 依赖 pump() 被每帧驱动。万一 pump 因为异常或状态错乱停了，busy() 会永远
+        // 为真 —— 没有这道闸，玩家就被锁在界面里出不去了。最多拦 2 秒，之后放行。
+        if (n == 1) {
+            // settling() 而不是 busy()：载入蓝图如果只是改名，走的是 push()，
+            // 那条路不设 pendTarget，busy() 当场就是 false —— 用 busy() 根本拦不住
+            // （实测：点载入后立刻 Esc 能退出去，重进时板子还在重建）。
+            if (Sync.settling()) {
+                long now = System.currentTimeMillis();
+                if (this.busyBlockSince == 0L) {
+                    this.busyBlockSince = now;
+                }
+                if (now - this.busyBlockSince < BUSY_ESCAPE_GRACE_MS) {
+                    this.say(Lang.t("st.busy"), true);
+                    return true;
+                }
+            }
+            this.busyBlockSince = 0L;
+        }
         boolean bl2;
         if (n == 29 || n == 157) {
             this.applyIntercept();

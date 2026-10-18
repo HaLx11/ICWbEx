@@ -752,8 +752,19 @@ public final class Replay {
         }
     }
 
-    /** Recomputes connection masks of the local copy so the GUI keeps rendering links. */
-    private static void refreshLocal(IntegratedCircuit ic) {
+    /**
+     * Recomputes connection masks of the local copy so the GUI keeps rendering links.
+     *
+     * <p><b>0.4.8:</b> also called from the removal path ({@code GuiICWbEx.deleteKeys}).
+     * {@code IntegratedCircuit.removePart} only clears the removed cell - it does not
+     * touch the neighbours' {@code connMap}, so a wire next to the deleted part kept
+     * claiming it was still connected: the GUI drew the link, and dropping a new part
+     * into the same cell did not connect (the neighbours' masks still pointed at the
+     * old identity). Re-opening the workbench fixed it because PR rebuilds the board
+     * from a fresh desc, which recomputes every mask. One pass here reproduces exactly
+     * that rebuild without leaving the screen.
+     */
+    public static void refreshLocal(IntegratedCircuit ic) {
         try {
             Size size = ic.size();
             int w = size.width();
@@ -839,7 +850,27 @@ public final class Replay {
 
         if (before == null || resized || descFirst) {
             // Server contents unknown / size or name must change: rebuild it all.
-            if (resized || descFirst) {
+            if (resized) {
+                // 改尺寸：必须先发空板，服务端要按新尺寸腾地方。
+                IntegratedCircuit blank = new IntegratedCircuit();
+                blank.name_$eq(ic.name());
+                blank.size_$eq(new Size(w, h));
+                tile.sendNewICToServer(blank);
+            }
+            else if (descFirst && !hasBundledCable(ic)) {
+                // 0.4.8：只是**改名**（尺寸没变）。把整块板连名字一起发过去：
+                // 服务端一次拿到完整状态，回显给客户端的也是完整板 —— 不会出现
+                // "板子空一下、然后零件一个个长出来"。空板方案（下面那条 else）
+                // 会让 readDesc 先 clear 整块板，再靠重放补，用户看到的就是那段空白。
+                // 有集束缆时必须退回空板方案：整板 desc 会把 null signal 送进
+                // PR 的 unpackDigital，直接崩。
+                System.out.println("[ICWbEx] push: whole-board desc for a rename ("
+                    + w + "x" + h + ", no bundled cable)");
+                tile.sendNewICToServer(ic);
+                refreshLocal(ic);
+                return true;
+            }
+            else if (descFirst) {
                 IntegratedCircuit blank = new IntegratedCircuit();
                 blank.name_$eq(ic.name());
                 blank.size_$eq(new Size(w, h));
