@@ -25,7 +25,10 @@ import mrtjp.projectred.fabrication.CircuitPart;
 import mrtjp.projectred.fabrication.IntegratedCircuit;
 import mrtjp.projectred.fabrication.InsulatedWireICPart;
 import mrtjp.projectred.fabrication.OpWire;
+import mrtjp.projectred.fabrication.SequentialGateICPart;
+import mrtjp.projectred.fabrication.SequentialICGateLogic;
 import mrtjp.projectred.fabrication.TConnectableICPart;
+import mrtjp.projectred.fabrication.TTimerGateLogic;
 import mrtjp.projectred.fabrication.TileICWorkbench;
 import net.minecraft.nbt.CompressedStreamTools;
 import net.minecraft.nbt.NBTTagCompound;
@@ -799,6 +802,135 @@ public final class Replay {
         op.writeOp(ic, new Point(x0, y), new Point(x1, y), out);
     }
 
+    // ------------------------------------------------------------------
+    // 0.4.9: keep running timers OFF the wire
+    //
+    // ProjectRed's Timer persists its pointer through save()/writeDesc() as an
+    // absolute value, and load()/readDesc() then does
+    //
+    //     pointer_start = <value read>;
+    //     if (pointer_start >= 0) pointer_start = getTotalTime() - pointer_start;
+    //
+    // getTotalTime() falls back to MultipartSaveLoad.loadingWorld() when the
+    // circuit's network exists but its world does not - which is exactly the
+    // state during item placement - and that static field is null there, so the
+    // fallback NPEs on the client thread and kills the game.
+    //
+    // Vanilla never reaches that state in the workbench: a fresh board stays
+    // client-only until it has a blueprint, and parts are sent to the server as
+    // geometry ops, so the server builds its own Timer through onAdded()/setup()
+    // and the pointer it stores is its own. ICWbEx replaces both halves of that:
+    // newBoardSafely() forces hasBP and pushes, and push() replays whole parts
+    // through writeDesc(). The server then stores the CLIENT's absolute pointer,
+    // and 潜行右键 on the workbench writes that straight into the blueprint item.
+    // Placing that item is the crash.
+    //
+    // So: park (pointer = -1) any timer for the duration of a desc write or a
+    // whole-board push, then put the client's own value back. The client board
+    // keeps ticking; the server and the saved item only ever see "stopped".
+    // Sequencing/counter/state-cell gates are untouched - only Timer and
+    // StateCell implement TTimerGateLogic, and both simply start from zero when
+    // they are loaded with -1.
+    // ------------------------------------------------------------------
+
+    /** A timer pointer captured before it was parked. */
+    static final class ParkedTimer {
+        final TTimerGateLogic logic;
+        final long pointer;
+
+        ParkedTimer(TTimerGateLogic logic, long pointer) {
+            this.logic = logic;
+            this.pointer = pointer;
+        }
+    }
+
+    static TTimerGateLogic timerOf(CircuitPart part) {
+        if (!(part instanceof SequentialGateICPart)) {
+            return null;
+        }
+        try {
+            SequentialICGateLogic logic = ((SequentialGateICPart) part).logic();
+            return logic instanceof TTimerGateLogic ? (TTimerGateLogic) logic : null;
+        }
+        catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** Parks one part's timer. Returns null when it is absent or already parked. */
+    static ParkedTimer parkTimer(CircuitPart part) {
+        TTimerGateLogic timer = timerOf(part);
+        if (timer == null) {
+            return null;
+        }
+        try {
+            long pointer = timer.pointer_start();
+            if (pointer < 0L) {
+                return null;
+            }
+            timer.pointer_start_$eq(-1L);
+            return new ParkedTimer(timer, pointer);
+        }
+        catch (Throwable t) {
+            return null;
+        }
+    }
+
+    static void unpark(ParkedTimer parked) {
+        if (parked == null) {
+            return;
+        }
+        try {
+            parked.logic.pointer_start_$eq(parked.pointer);
+        }
+        catch (Throwable ignored) {
+        }
+    }
+
+    static List<ParkedTimer> parkAllTimers(IntegratedCircuit ic) {
+        List<ParkedTimer> parked = new ArrayList<ParkedTimer>();
+        if (ic == null) {
+            return parked;
+        }
+        try {
+            Size size = ic.size();
+            if (size == null) {
+                return parked;
+            }
+            for (int y = 0; y < size.height(); ++y) {
+                for (int x = 0; x < size.width(); ++x) {
+                    CircuitPart part = ic.getPart(x, y);
+                    if (part == null) {
+                        continue;
+                    }
+                    ParkedTimer p = parkTimer(part);
+                    if (p != null) {
+                        parked.add(p);
+                    }
+                }
+            }
+        }
+        catch (Throwable ignored) {
+        }
+        return parked;
+    }
+
+    /** Whole-circuit desc (stream 5) with every timer parked. */
+    static void sendWholeBoardStopped(TileICWorkbench tile, IntegratedCircuit ic) {
+        if (tile == null || ic == null) {
+            return;
+        }
+        List<ParkedTimer> parked = parkAllTimers(ic);
+        try {
+            tile.sendNewICToServer(ic);
+        }
+        finally {
+            for (int i = 0; i < parked.size(); ++i) {
+                unpark(parked.get(i));
+            }
+        }
+    }
+
     /**
      * @param before    snapshot of the client circuit as it was before the edit that
      *                  just happened, or null when unknown.
@@ -866,7 +998,8 @@ public final class Replay {
                 // PR 的 unpackDigital，直接崩。
                 System.out.println("[ICWbEx] push: whole-board desc for a rename ("
                     + w + "x" + h + ", no bundled cable)");
-                tile.sendNewICToServer(ic);
+                // 0.4.9: whole board, but with every timer parked (see parkTimer).
+                sendWholeBoardStopped(tile, ic);
                 refreshLocal(ic);
                 return true;
             }
@@ -938,7 +1071,16 @@ public final class Replay {
             out.writeByte(part.id());
             out.writeByte(part.x());
             out.writeByte(part.y());
-            part.writeDesc(out);
+            // 0.4.9: desc carries the timer pointer as an absolute value; send a
+            // parked one so the server never stores a "running" pointer (see the
+            // comment block above parkTimer).
+            ParkedTimer parked = parkTimer(part);
+            try {
+                part.writeDesc(out);
+            }
+            finally {
+                unpark(parked);
+            }
         }
         // wires last: server-side onAdded() recomputes their connMap and notifies
         // neighbouring gates, which fixes the gate masks case-1 leaves at zero.
@@ -981,8 +1123,76 @@ public final class Replay {
         }
         tile.flushICStream();
 
+        // 0.4.9 (e): park the timers a second time, now that the wires have landed.
+        //
+        // The order above is gates-then-wires, and a wire's server-side onAdded()
+        // notifies its neighbours, which runs GateICPart.onNeighborChanged() ->
+        // onChange() -> and a Timer whose input reads 0 starts its pointer right
+        // there. So the -1 we wrote during the gate pass is gone by the time the
+        // player takes the board out of the bench, and saveIC() copies pelapsed >= 0
+        // into the chip. Re-sending just the timer descs after the wires leaves the
+        // server stopped and nothing afterwards re-arms it.
+        parkTimersOnServer(tile, ic);
+
         refreshLocal(ic);
         return resized || descFirst;
+    }
+
+    /**
+     * 0.4.9: re-emit the descriptor of every timer on the board with the pointer
+     * parked at -1, so the server's copy stays stopped after the wire pass.
+     *
+     * <p>This is a <b>second</b> write of those parts; the first one went out with
+     * the other gates. It matters because the wire commands that come after them
+     * make the server run {@code onChange()} on every neighbouring gate, and
+     * {@code Timer.onChange} restarts a pointer whose input is low.
+     *
+     * <p>A gate desc is applied through {@code readDesc}, which sets
+     * {@code pointer_start} straight from the stream and never calls
+     * {@code getTotalTime()} - so this pass is safe for the server even though the
+     * first load of the same part would not be.
+     */
+    static void parkTimersOnServer(TileICWorkbench tile, IntegratedCircuit ic) {
+        int n = 0;
+        try {
+            Size size = ic.size();
+            if (size == null) {
+                return;
+            }
+            int w = size.width();
+            int h = size.height();
+            for (int y = 0; y < h; y++) {
+                for (int x = 0; x < w; x++) {
+                    CircuitPart part = ic.getPart(x, y);
+                    if (part == null || timerOf(part) == null) {
+                        continue;
+                    }
+                    try {
+                        MCDataOutput out = tile.getICStreamOf(1);
+                        out.writeByte(part.id());
+                        out.writeByte(part.x());
+                        out.writeByte(part.y());
+                        ParkedTimer parked = parkTimer(part);
+                        try {
+                            part.writeDesc(out);
+                        }
+                        finally {
+                            unpark(parked);
+                        }
+                        n++;
+                    }
+                    catch (Throwable e) {
+                        continue;
+                    }
+                }
+            }
+            tile.flushICStream();
+        }
+        catch (Throwable ignored) {
+        }
+        if (n > 0) {
+            System.out.println("[ICWbEx] push: parked " + n + " timer(s) on the server");
+        }
     }
 
     /**

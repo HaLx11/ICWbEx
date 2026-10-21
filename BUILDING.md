@@ -152,6 +152,13 @@ python tools/push_github.py
 把新旧两份 class 用 `javap -c -p` 导出指令序列，去掉偏移量与常量池序号后比较，
 确认只有预期的方法存在差异。
 
+0.4.9 起还接管了入口类 `icwbe/ICWbEx.class`（只为在 `onLoadComplete` 里多挂一个 tick
+handler）。它同样适用这一条：原文只有 `MODID`/`NAME`/`VERSION` 三个常量和
+`onLoadComplete`，`@Mod` 属性必须逐字保留 —— `acceptableRemoteVersions="*"` 一旦丢了，
+客户端就进不了没装本模组的服务器。`build.py` 会对自编译的新条目做版本串等长替换
+（原文里的 `"0.2.6"` 就是留给它的），只改了底座条目的旧实现会报
+`stale version bytes`。
+
 ### ProjectRed IC 同步协议
 
 - 服务端 `TileICWorkbench.read(in, key)`：`case 4` 为 op 流，`case 5` 为整板描述包
@@ -162,6 +169,25 @@ python tools/push_github.py
 - CircuitOp 共 61 个（ordinal 0..60），`getOperation` 没有空值判断，
   自产 opId 必须限制在 0..255。
 - `OpWire.writeOp` 为 4 字节 `[x0][y0][x1][y1]`；服务端逐格放置，占用格与边界格静默跳过。
+
+### 计时器运行态（pelapsed）
+
+`Timer`（顺序门 subID 18）与 `StateCell`（数组门 subID 21）都经 `TTimerGateLogic` 持久化三个
+键：`pmax`（设定值）、`pelapsed`（从起点到现在的 tick 数，**只有运行时才 >= 0**）、
+`tsave`（墙钟兜底）。`Timer.load` 的规矩是
+`if (pelapsed >= 0) pointer_start = getTotalTime() - pelapsed;`，而 `getTotalTime()` 在
+"`network()` 非空、`network().getWorld()` 为 null"时会回退到
+`MultipartSaveLoad.loadingWorld().getWorldTime()` —— 那个静态字段只在**从存档载入世界**
+期间非 null，物品放置时是 null，于是直接 NPE（0.4.9 修的就是这个）。
+
+因此凡是我们写出去的板（`.icbp` 文件、剪贴板、零件 desc、整板推送），**运行中的计时器
+一律写成 `pelapsed = -1`**，只保留 `pmax` / `tsave`。三点务必记住：
+
+- 按 NBT **键名**判断，不要按 id/subID：`StateCell` 经 `TExtraStateLogic` 转调同一 trait，
+  同样带 `pelapsed`；而且 `getLong` 读**缺失**的键返回 `0`，`0` 也满足 `>= 0`。
+- `Sequencer`（subID 19）只写 `pmax` / `tsave`，`load` 不碰 `getTotalTime()`，天然安全。
+- 客户端与服务端对同一份芯片表现不同（服务端那一刻 `network() == null`，直接返回
+  `tsave`），所以"服务端没事、客户端崩"是正常现象，不能据此认为芯片是好的。
 
 ### 同步层设计
 

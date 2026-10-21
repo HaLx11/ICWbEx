@@ -4,13 +4,20 @@
  * (the pasted content must not affect existing bundled cables - overwriting one
  * would replace its signal state and poison the whole-circuit desc). Skipped
  * cells are counted in lastSkippedBundled so the GUI can tell the player.
+ *
+ * 0.4.9: stamp() also recomputes the four-way connection masks of the parts that
+ * merely border the paste. They were never refreshed, so a wire whose neighbour
+ * got replaced kept pointing at the old part and looked broken while the server
+ * side (which rebuilds masks from scratch) had it connected. See relinkNeighbours().
  */
 package icwbe;
 
 import icwbe.Blueprints;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import mrtjp.core.vec.Size;
 import mrtjp.projectred.fabrication.BundledCableICPart;
 import mrtjp.projectred.fabrication.CircuitPart;
@@ -19,6 +26,15 @@ import mrtjp.projectred.fabrication.TConnectableICPart;
 import net.minecraft.nbt.NBTTagCompound;
 
 public final class Clipboard {
+    /**
+     * Straight-direction offsets, indexed the way ProjectRed indexes them:
+     * {@code TICAcquisitions.posOfStraight(r) = new Point(x, y).offset(r)}, which
+     * was confirmed against a real 1392-part board -- r0 north, r1 east, r2 south,
+     * r3 west is the only mapping that makes the board's stored masks symmetric.
+     */
+    private static final int[] DX = {0, 1, 0, -1};
+    private static final int[] DY = {-1, 0, 1, 0};
+
     /** cells skipped by the last stamp() because a bundled cable occupies them. */
     public int lastSkippedBundled;
 
@@ -224,6 +240,11 @@ public final class Clipboard {
                 }
                 CircuitPart circuitPart = CircuitPart.createPart((int)entry.id);
                 if (circuitPart == null) continue;
+                // 0.4.9: same rule as blueprint import - a pasted timer starts from 0
+                // instead of inheriting "how far the copied one had got". The paste
+                // itself does not crash (the board is live here, so the network has a
+                // world), but carrying pelapsed over makes the copy jump mid-cycle.
+                Blueprints.stopTimer(entry.data);
                 circuitPart.load(entry.data);
                 integratedCircuit.setPart(n4, n5, circuitPart);
                 arrayList.add(circuitPart);
@@ -232,6 +253,9 @@ public final class Clipboard {
             catch (Throwable throwable) {}
         }
         this.relink(integratedCircuit, arrayList);
+        // 0.4.9: the neighbours of the pasted cells are stale in the same way the
+        // paste itself used to be. Recompute them once everything has landed.
+        this.relinkNeighbours(integratedCircuit, arrayList);
         return n3;
     }
 
@@ -242,6 +266,63 @@ public final class Clipboard {
                 ((TConnectableICPart)circuitPart).updateConns();
             }
             catch (Throwable throwable) {}
+        }
+    }
+
+    /**
+     * 0.4.9: the parts that merely <i>border</i> the paste keep the mask they had
+     * before, and that mask still points at whatever used to occupy the cell.
+     * Nothing refreshes them: {@link #stamp} writes parts through
+     * {@code setPart()} (so the pasted ones do get {@code onAdded()}), but a
+     * neighbour is only woken up by {@code onNeighborChanged()}, which a paste
+     * never sends.  Result: the paste looks right and the wires around it are
+     * silently one-sided.
+     *
+     * <p>Must run after every entry has landed -- a neighbour can border two
+     * pasted cells and the second one may change the answer.
+     *
+     * <p>Deliberately does <b>not</b> call {@code updateConns()}.  That fires
+     * {@code onMaskChanged()} -> {@code sendConnUpdate()} -> {@code writeByte(connMap)},
+     * i.e. it appends to the workbench's op stream, and a partial stream is what
+     * produced the 0xFF crash recorded in {@code Sync}.  The op stream does not
+     * carry connMap at all (see {@code OpInsulatedWire}'s constructor), so the
+     * server computes its own copy and nothing has to be sent: writing the field
+     * directly is correct and side-effect free.
+     */
+    private void relinkNeighbours(IntegratedCircuit integratedCircuit, List<CircuitPart> list) {
+        Set<Long> done = new HashSet<Long>();
+        for (CircuitPart circuitPart : list) {
+            int x;
+            int y;
+            try {
+                x = circuitPart.x();
+                y = circuitPart.y();
+            }
+            catch (Throwable throwable) {
+                continue;
+            }
+            for (int r = 0; r < 4; ++r) {
+                int nx = x + DX[r];
+                int ny = y + DY[r];
+                long key = (long)nx << 32 | (long)(ny & 0xFFFFFFFF);
+                if (!done.add(Long.valueOf(key))) continue;
+                CircuitPart neighbour = Clipboard.partAt(integratedCircuit, nx, ny);
+                if (!(neighbour instanceof TConnectableICPart)) continue;
+                TConnectableICPart c = (TConnectableICPart)neighbour;
+                try {
+                    byte have = c.connMap();
+                    byte want = 0;
+                    for (int rr = 0; rr < 4; ++rr) {
+                        if (!c.discover(rr)) continue;
+                        want = (byte)(want | 1 << rr);
+                    }
+                    if (want != have) {
+                        // bits 4..7 are not ours; see Blueprints.reinitConnections().
+                        c.connMap_$eq((byte)((have & 0xF0) | want));
+                    }
+                }
+                catch (Throwable throwable) {}
+            }
         }
     }
 

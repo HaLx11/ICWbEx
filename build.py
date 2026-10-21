@@ -51,7 +51,7 @@ OUT_DIR = os.path.join(HERE, "out")
 STUBSOUT = os.path.join(HERE, "build", "stubsout")
 CLASSES = os.path.join(HERE, "build", "out")
 
-NEW_VER = "0.4.8"
+NEW_VER = "0.4.9"
 OLD_VER = b"0.2.6"
 NEW_VER_B = NEW_VER.encode("ascii")
 
@@ -76,9 +76,16 @@ REPLACE = [
     # fixes silently disappear - the assertion in assert_call_sites() checks the
     # finished jar for exactly that.
     "icwbe/Blueprints.class",
+    # 0.4.9: the mod entry class was the base jar's. We need our own so
+    # onLoadComplete can also install HeldChipGuard. Kept byte-compatible with the
+    # original otherwise, including the "0.2.6" literal build.py rewrites.
+    "icwbe/ICWbEx.class",
 ]
 ADD = [
     "icwbe/Replay.class",
+    # 0.4.9: parks a running timer on the client's held chip before ProjectRed
+    # loads it during placement (see the class comment for the crash it prevents).
+    "icwbe/HeldChipGuard.class",
     # 0.4.7: the board-growth geometry. Kept as its own class (and deliberately free
     # of Minecraft/ProjectRed types) so the planner can be executed outside the game:
     # tools/verify_growth.py in the devpack compiles this file alone and drives the
@@ -296,6 +303,27 @@ MCINFO_DESCRIPTION = (
     "is built line by line and only the lines inside the visible window are drawn, and the wheel scrolls "
     "it (with a scrollbar and a position in the footer) instead of squeezing the text below a readable "
     "size. Status messages also stay up about twice as long, scaled by their length.\n\n"
+    "0.4.9: two fixes around imported blueprints. (1) A timer saved while it was running crashed the client "
+    "the moment the board was placed into the world: ProjectRed's Timer.load() sees pelapsed >= 0, calls "
+    "getTotalTime(), and that falls back to MultipartSaveLoad.loadingWorld().getWorldTime() - which is null "
+    "while an item is being placed, so it threw an NPE inside ItemPartGate.newPart -> preparePlacement. "
+    "Timers now come back stopped and start from zero, which is also what 'start counting from 0 again' "
+    "means here; pmax and tsave are kept. (2) A loaded blueprint kept whichever four-way connection masks "
+    "were stored in the file. IntegratedCircuit.load() builds parts through setPart_do() and never calls "
+    "onAdded(), and the recompute paths of wires and gates are guarded by !isRemote(), so inside the "
+    "client-side workbench nothing recalculated them - a stale bit showed a wire as disconnected while the "
+    "server, which rebuilds masks from scratch, had it connected. Blueprints now recompute every mask from "
+    "the geometry after loading (directly, without going through updateConns(), so the op stream is not "
+    "polluted), and pasting does the same for the parts that merely border the paste, which had been left "
+    "pointing at whatever used to occupy the cell. (3) A freshly built board still crashed on placement, and "
+    "the cause was not the file but the board-to-server push: a part desc writes the timer pointer as an "
+    "absolute value, the server stored the client's running pointer, and sneaking-right-clicking the "
+    "workbench writes the server's board into a blueprint item - so the item carried pelapsed >= 0 and "
+    "crashed when placed. Vanilla never reaches that state because a fresh board stays client-only until it "
+    "has a blueprint and parts reach the server as geometry ops, upon which the server builds its own timer "
+    "through onAdded(). Every desc write, every whole-board push and every .icbp save now parks the pointer "
+    "at -1 for the duration of the call and restores it afterwards, so the client board keeps ticking while "
+    "the server, and any item made from it, only ever sees a stopped timer.\n\n"
     "Purely client-side. The ProjectRed jar itself is never modified, and no custom network channel is "
     "registered: opening the GUI, resizing the board, pasting, undoing and loading blueprints all go "
     "through ProjectRed's own IC synchronisation protocol. The server therefore does NOT need this mod."
@@ -640,8 +668,18 @@ def assemble():
             dstz.writestr(name, data)
             written.add(name)
         for name, data in new_data.items():
-            if name not in written:
-                dstz.writestr(name, data)
+            if name in written:
+                continue
+            # 0.4.9: classes we compile ourselves (the REPLACE entries and ADD
+            # entries) never pass through the loop above, so their literal
+            # "0.2.6" used to survive into the jar and the stale-bytes check
+            # below rejected the build. Same length, same safe in-place patch.
+            if name.endswith(".class") and ver_patch:
+                nb = data.replace(OLD_VER, NEW_VER_B)
+                if nb != data:
+                    hits.append(name)
+                    data = nb
+            dstz.writestr(name, data)
 
     print("== jar assembled:", dst)
     print("   version string patched in:", hits or "(none)")

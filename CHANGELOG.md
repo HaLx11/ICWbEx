@@ -1,5 +1,72 @@
 # Changelog
 
+## 0.4.9 (2026-10-21) — 放置芯片不再崩 + 载入/粘贴后重算连线
+
+### 修复
+
+- **放置含计时器的芯片时客户端 NPE**。ProjectRed 上游：`Timer.save` 在计时器"在走"时写
+  `pelapsed >= 0`，`Timer.load` 见到 `>= 0` 就去算当前时刻（`getTotalTime()`），而它在
+  "网络已存在、`world()` 仍为 null"时回退到 `MultipartSaveLoad.loadingWorld()` —— 放置
+  物品那一刻该静态字段是 `null`，直接 NPE，栈在
+  `ItemPartGate.newPart → CircuitGatePart.preparePlacement`。台面上不会崩，因为那里
+  `network() == null`、`getTotalTime()` 直接返回存盘的 `tsave`。
+  最终落点是**客户端手持芯片守卫**（`icwbe/HeldChipGuard`）：每 tick 检查手持物，`icdata`
+  里带运行中的计时器就把 `pelapsed` 压成 `-1`，`pmax`/`tsave` 不动。为了挂上它，本版
+  **接管底座入口 `icwbe/ICWbEx.class`**（`@Mod` 属性逐字保留，`acceptableRemoteVersions="*"`
+  不变），在 `onLoadComplete` 里补 `HeldChipGuard.install()`。
+  教训：前一版把复位做在"推送链路"上（`Replay.parkTimer` / `parkTimersOnServer`），但它
+  要求用户真的推过带计时器的板；崩溃现场 `grep "push: parked"` 是 0，板子是 16x16 空板 ——
+  复位逻辑一次都没跑到。**修在"过程"上会漏，修在"数据进入危险入口前"才闭合。**
+- **同一问题的其余出口**一并堵住：载入蓝图/分享串（`Blueprints.stopTimers`，在 `ic.load()`
+  **之前**跑）、粘贴（`Clipboard.stamp` 逐件 `stopTimer`）、写 `.icbp`
+  （`Blueprints.save` 落盘前）、推给服务端的每件 desc（`Replay.parkTimer/unpark`）、整板
+  推送（`Replay.sendWholeBoardStopped`）、以及 `push` 末尾的 `parkTimersOnServer` 第二遍
+  （导线在服务端 `onAdded()` → 相邻门 `onChange()` → `Timer.onChange` 会把表重新点着，
+  所以必须在导线发完之后再压一次）。按 NBT **键名**判断而非 id/subID：`StateCell` 经
+  `TExtraStateLogic` 转调同一 trait 也带 `pelapsed`；`getLong` 读缺失键返回 0，0 同样落进
+  崩溃分支。
+- **载入/粘贴后连线不对（线画着却不导电）**：`IntegratedCircuit.load` 用 `setPart_do()`
+  建件、**从不调 `onAdded()`**，而重算掩码的 `updateConns()` 只挂在
+  `onAdded`/`onNeighborChanged` 上；这两个回调又都被
+  `if (!world().network().isRemote())` 包着，客户端工作台恒为 remote ⇒ **客户端从不重算**，
+  掩码只信文件。新增 `Blueprints.reinitConnections(ic)` 载入后按几何重算四向掩码；
+  `Clipboard.stamp` 追加 `relinkNeighbours`，把**仅与被粘贴区域相邻**的件也重算一遍
+  （它们原本仍指向被覆盖掉的旧件）。重算用 `connMap_$eq` 直写而**不调** `updateConns()`：
+  后者会经 `onMaskChanged → sendConnUpdate → writeByte(connMap)` 往元胞流追加字节，
+  正是 0.2.8 那次"半截流被当成 0xFF 操作码"事故的入口。
+- **载入蓝图后立刻点"复制分享码"，偶尔弹"N 根没通电的集束缆"**。那是误报：
+  `BundledCommons.unpackDigital(_, 0)` 返回 `null`，而 `BundledCableICPart.readDesc`
+  直接把它写进字段 —— 所以一根**没有信号**的集束缆，走一趟 desc 同步后字段就是 `null`，
+  `null` 与全零在网络上不可区分，是"没通电"的正常表示。`countDeadBundled*` 却按
+  `isDeadSignal` 的 `sig == null || sig.length != 16` 计数，等于把正常状态判成损坏。
+  分享按钮（`GuiBlueprint.doShareCopy`）又是唯一"没跑 `ensureCaches` 就数"的入口，
+  于是 `save()` 从不误报、分享码偶尔误报。现在两个计数函数只把**长度不是 16** 的数组
+  算损坏（`null` 放过），真损坏仍会被挡下；被挡时打印
+  `[ICWbEx] dead bundled cable at (x,y): len=N`。判据**只读**，没有在 `count…` 里顺手
+  调 `ensureCaches` 改电路对象。
+
+### 行为变化
+
+- 导入、粘贴、放置之后，**计时器从 0 重新开始计时**；原件跑了多久不会带过去。
+  放置进世界后由入场第一次传播唤醒（`Timer.onChange` 见输入为 0 就 `startPointer()`），
+  输出口按设定间隔翻转。`pmax`/`tsave` 保留。
+
+### 诊断
+
+- `[ICWbEx] held chip: stopped N running timer(s)`（5 秒限流，数字为窗口内累计）。
+  服务端会把自己的芯片副本定期同步回背包、把 `pelapsed` 写回去，守卫每 tick 再压一次，
+  所以这行周期性出现属正常；**重写从不限流，只有日志限流**。
+- `[ICWbEx] bp.apply stopped N` / `bp.save parked N` / `push: parked N timer(s) on the server`。
+- `[ICWbEx] conn fix (x,y) Class have -> want`（最多 20 行）与修正计数。日志里没有
+  `conn fix`，说明掩码本来是对的，问题在别处。
+
+### 说明
+
+- 仍为纯客户端：不改 ProjectRed jar、不注册网络通道，全部走 PR 自己的 IC 同步协议；
+  服务器不装也能连。
+- 上游 `getTotalTime()` 的 `loadingWorld()==null` 兜底本身是错的，但那是两端共用的代码，
+  本模组不碰，只保证不把运行态写进物品/文件。
+
 ## 0.4.8 (2026-10-18) — 蓝图物品名同步 + 擦除后重算连接 + 缩放锚点
 
 ### 修复

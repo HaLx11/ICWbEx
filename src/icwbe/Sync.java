@@ -532,7 +532,9 @@ public final class Sync {
                     full.load(pendTarget);
                     System.out.println("[ICWbEx] phase1b: whole-board desc for a rename \""
                         + pendName + "\" " + pendW + "x" + pendH);
-                    tile.sendNewICToServer(full);
+                    // 0.4.9: park the timers so the server never stores a running
+                    // pointer it would later write into a blueprint item.
+                    Replay.sendWholeBoardStopped(tile, full);
                     markEchoRebase();
                     pendBase = pendTarget;      // 服务端此刻 == target，phase 2 无差异可发
                 }
@@ -864,7 +866,9 @@ public final class Sync {
             abortStaged(tileICWorkbench);
             try {
                 if (!Replay.hasBundledCable(integratedCircuit)) {
-                    tileICWorkbench.sendNewICToServer(integratedCircuit);
+                    // 0.4.9: same reason as the rename path - never hand the server a
+                    // running timer pointer.
+                    Replay.sendWholeBoardStopped(tileICWorkbench, integratedCircuit);
                 }
             }
             catch (Throwable ignored) {

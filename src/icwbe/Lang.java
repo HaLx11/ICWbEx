@@ -238,6 +238,6 @@ public final class Lang {
         Lang.put("st.bp_cooldown", "\u5207\u6362\u592a\u9891\u7e41\uff0c\u7a0d\u7b49\u534a\u79d2\u518d\u8f7d\u5165", "switching too fast - wait half a second");
         Lang.put("st.marquee_moved", "\u753b\u677f\u79fb\u52a8\u6216\u7f29\u653e\u4e86\uff0c\u5df2\u53d6\u6d88\u8fd9\u6b21\u6846\u9009\uff08\u907f\u514d\u5220\u9519\uff09", "the board was panned or zoomed - the marquee was cancelled so it cannot delete the wrong parts");
         Lang.put("st.erase_preview", "\u5c06\u5220\u9664 %1$s \u4e2a\u5143\u4ef6", "%1$s part(s) will be deleted");
-        Lang.put("help.title", "IC \u5de5\u4f5c\u53f0\u589e\u5f3a\u7248 v0.4.7 \u00b7 \u64cd\u4f5c\u8bf4\u660e", "IC Workbench Ex v0.4.7 - controls");
+        Lang.put("help.title", "IC \u5de5\u4f5c\u53f0\u589e\u5f3a\u7248 v0.4.9 \u00b7 \u64cd\u4f5c\u8bf4\u660e", "IC Workbench Ex v0.4.9 - controls");
     }
 }

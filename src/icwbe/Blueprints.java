@@ -12,7 +12,9 @@ import java.util.List;
 
 import mrtjp.core.vec.Size;
 import mrtjp.projectred.fabrication.BundledCableICPart;
+import mrtjp.projectred.fabrication.CircuitPart;
 import mrtjp.projectred.fabrication.IntegratedCircuit;
+import mrtjp.projectred.fabrication.TConnectableICPart;
 import mrtjp.projectred.fabrication.TileICWorkbench;
 import net.minecraft.client.Minecraft;
 import net.minecraft.nbt.CompressedStreamTools;
@@ -94,6 +96,18 @@ public final class Blueprints {
 
     /** 见 {@link #TAG_BYTE} 的说明（{@code parts} 的元素类型）。 */
     private static final int TAG_COMPOUND = 10;
+
+    /** 0.4.9：计时器把 {@code pelapsed}/{@code tsave} 存成 long。 */
+    private static final int TAG_LONG = 4;
+
+    /**
+     * 0.4.9：一次导入里最多打印多少条"连线被修正"的诊断。
+     * 这些行是给用户回传的——它把"有时候连不上"从玄学变成坐标。
+     */
+    private static final int CONN_LOG_LIMIT = 20;
+
+    /** 死信号诊断日志上限（只有真损坏才会走到，正常板子一行都没有）。 */
+    private static final int DEAD_LOG_LIMIT = 20;
 
     /** 0.3.8：覆盖前留底的目录名（在游戏目录下，不在 {@code blueprints/} 里，面板不会列出来）。 */
     private static final String BACKUP_DIR = "icwbe_blueprint_backups";
@@ -213,6 +227,12 @@ public final class Blueprints {
             // 加两个自己的标记，方便以后做版本迁移；ic.load 不认得的键会直接忽略
             t.func_74768_a("icwbe:ver", 1);
             t.func_74778_a("icwbe:savedBy", "ICWbEx");
+            // 0.4.9：文件里不留"正在走"的计时器。这样的文件读回来时，Timer.load 会走
+            // getTotalTime() 的 loadingWorld() 兜底 —— 那正是放置崩溃的入口。
+            int stopped = stopTimers(t);
+            if (stopped > 0) {
+                System.out.println("[ICWbEx] bp.save parked " + stopped + " running timer(s)");
+            }
 
             // 先写临时文件再原子替换。
             // 直接写目标文件的话，一旦序列化中途抛异常，磁盘上会留下一个截断的 gzip ——
@@ -496,23 +516,55 @@ public final class Blueprints {
      * （多了一段"逐字节非零才算活"的循环），0.3.8 把 Blueprints 接管过来时差点直接照抄：
      * 现场证据是 {@code 测试1.icbp} 的两根集束缆 signal 全零、却一直是能正常载入的。
      * 教训见 HANDOFF 铁律：<b>底座 jar 里的类必须 javap 实证，不能凭旧源码猜。</b>
+     * <p>0.4.9 补充：本类两个 {@code countDeadBundled*} 已经<b>不再调用它</b>——{@code null}
+     * 是"没信号"的正常表示，判成死信号会让分享码按钮误报（详见 {@link #countDeadBundled}）。
+     * 但它保留下来：{@code build.py} 的断言以它为准，它也是底座那条规则的唯一书面记录。
      */
     private static boolean isDeadSignal(byte[] sig) {
         return sig == null || sig.length != BUNDLED_CHANNELS;
     }
 
-    /** 电路里有多少根"死信号"的集束缆（同步后服务端会变 null 的那种）。 */
+    /**
+     * 电路里有多少根"死信号"的集束缆（同步后服务端会变 null 的那种）。
+     *
+     * <p><b>0.4.9：这里的判据与 {@link #isDeadSignal} 故意不同，别"修正"回去。</b>
+     * {@code isDeadSignal} 把 {@code null} 也算死信号，那是底座 jar 的原始写法；而
+     * {@code null} 恰恰是"这根缆没有信号"的<b>正常表示</b>：
+     * <pre>
+     *   BundledCommons.packDigital(byte[])     : null 与全零都压成 0
+     *   BundledCommons.unpackDigital(_, 0)     : 0 读回来是 null
+     *   BundledCableICPart.readDesc            : signal = unpackDigital(signal, in.readShort())
+     * </pre>
+     * 也就是说，一根没通电的集束缆，只要走一趟 desc 同步，接收端字段就变成 {@code null}，
+     * 而且 {@code null} 与全零在网络上不可区分。把 {@code null} 计成"死"等于把正常状态
+     * 判成错误——实测症状就是：载入蓝图后立刻点"复制分享码"，偶尔会弹
+     * "{@code N 根没通电的集束缆}"。
+     *
+     * <p>真正的损坏只有一种：数组存在但<b>长度不是 16</b>（只可能来自坏文件），
+     * 那个仍然会被数出来、仍然会挡下保存。
+     */
     public static int countDeadBundled(IntegratedCircuit ic) {
         int n = 0;
         if (ic == null) {
             return 0;
         }
+        int logged = 0;
         try {
             scala.collection.Iterator it = ic.parts().values().iterator();
             while (it.hasNext()) {
                 Object o = it.next();
-                if (o instanceof BundledCableICPart && isDeadSignal(((BundledCableICPart) o).signal())) {
+                if (!(o instanceof BundledCableICPart)) {
+                    continue;
+                }
+                byte[] sig = ((BundledCableICPart) o).signal();
+                if (sig != null && sig.length != BUNDLED_CHANNELS) {
                     n++;
+                    if (logged < DEAD_LOG_LIMIT) {
+                        logged++;
+                        CircuitPart cp = (CircuitPart) o;
+                        System.out.println("[ICWbEx] dead bundled cable at (" + cp.x() + ","
+                            + cp.y() + "): len=" + sig.length);
+                    }
                 }
             }
         } catch (Throwable ignored) {
@@ -570,8 +622,15 @@ public final class Blueprints {
                 if (!pt.func_150297_b("signal", TAG_BYTE_ARRAY)) {
                     continue;
                 }
-                if (isDeadSignal(pt.func_74770_j("signal"))) {
+                // 同 countDeadBundled：null 等于"没信号"，不算损坏；只有长度不是 16 才算。
+                byte[] sig = pt.func_74770_j("signal");
+                if (sig != null && sig.length != BUNDLED_CHANNELS) {
                     n++;
+                    if (n <= DEAD_LOG_LIMIT) {
+                        System.out.println("[ICWbEx] dead bundled cable at ("
+                            + (pt.func_74771_c("xpos") & 0xFF) + ","
+                            + (pt.func_74771_c("ypos") & 0xFF) + "): len=" + sig.length);
+                    }
                 }
             }
         } catch (Throwable ignored) {
@@ -656,6 +715,168 @@ public final class Blueprints {
     }
 
     /**
+     * 0.4.9：把蓝图里"正在走"的计时器复位成停止态（{@code pelapsed = -1}）。
+     *
+     * <h3>为什么必须做</h3>
+     * ProjectRed 的 {@code TTimerGateLogic.save} 把计时器的运行状态写进
+     * {@code pmax / pelapsed / tsave} 三个键，其中 {@code pelapsed} 是
+     * "从起点到现在的毫秒数"，只在<b>正在走</b>时才 >= 0。它的 {@code load} 是：
+     * <pre>
+     *   pointer_start = getLong("pelapsed");
+     *   if (pointer_start &gt;= 0) pointer_start = getTotalTime() - pointer_start;
+     * </pre>
+     * 而 {@code getTotalTime()} 只有在板子挂在一个"有 world 的网络"上时才安全；
+     * 放回世界的瞬间网络存在、world 还是 null，于是回退到
+     * {@code MultipartSaveLoad.loadingWorld().getWorldTime()} —— 那个静态字段此刻是
+     * <b>null</b>，直接 NPE（2026-10-21 的崩溃报告就是这条链）。
+     *
+     * <p>台面上还有两个坑：{@code getLong} 读<b>缺失的键返回 0</b>（0 同样触发上面的分支），
+     * 以及 {@code StateCell} 通过 {@code TExtraStateLogic} 转调同一个 trait，所以它
+     * 也带 {@code pelapsed}。因此这里按<b>键名</b>判断，不按 id/subID 白名单。
+     *
+     * <p>语义取舍：导入后计时器从 0 重新开始。{@code pmax}（当前设定值）和
+     * {@code tsave}（墙钟兜底）原样保留，只清运行态。
+     *
+     * @return 被复位的零件个数
+     */
+    public static int stopTimers(NBTTagCompound icTag) {
+        int n = 0;
+        if (icTag == null) {
+            return 0;
+        }
+        try {
+            NBTTagList parts = icTag.func_150295_c("parts", TAG_COMPOUND);
+            if (parts == null) {
+                return 0;
+            }
+            int size = parts.func_74745_c();
+            for (int i = 0; i < size; i++) {
+                NBTTagCompound pt = parts.func_150305_b(i);
+                if (pt != null && stopTimer(pt)) {
+                    n++;
+                }
+            }
+        }
+        catch (Throwable ignored) {
+            // 版式不对就整段放过：宁可让下面的 load 自己报错，也不要在这里吞掉导入
+        }
+        return n;
+    }
+
+    /** 单个零件：带 {@code pelapsed} 且正在走 → 改成 -1。见 {@link #stopTimers}。 */
+    public static boolean stopTimer(NBTTagCompound partTag) {
+        if (partTag == null) {
+            return false;
+        }
+        try {
+            if (!partTag.func_150297_b("pelapsed", TAG_LONG)) {
+                return false;
+            }
+            if (partTag.func_74763_f("pelapsed") < 0L) {
+                return false;
+            }
+            partTag.func_74772_a("pelapsed", -1L);
+            return true;
+        }
+        catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * 0.4.9：按几何重建每个可连接零件的四向掩码。
+     *
+     * <h3>为什么需要</h3>
+     * {@code IntegratedCircuit.load()} 逐个 {@code setPart_do()} + {@code part.load()}
+     * 建立零件，<b>从不调用 {@code onAdded()}</b>；而重算掩码的 {@code updateConns()}
+     * 只挂在 {@code onAdded} / {@code onNeighborChanged} 上。更要命的是这两个回调在
+     * {@code WireICPart} / {@code GateICPart} 里都包着
+     * {@code if (!world().network().isRemote())} —— 客户端工作台里 {@code isRemote()}
+     * 为真，所以<b>客户端从来不重算</b>，掩码只来自文件、剪贴板或服务端回传的 desc。
+     *
+     * <p>服务端则相反：它收到操作码后是自己 {@code setPart()} → {@code onAdded()} →
+     * {@code updateConns()}，掩码永远是现算的。于是两边各算各的：文件里那一份只要
+     * 有一处不对，客户端就会永久显示断线，而服务端其实连着。
+     *
+     * <h3>为什么不直接调 {@code updateConns()}</h3>
+     * 因为它会触发 {@code onMaskChanged()} → {@code WireICPart.sendConnUpdate()} →
+     * {@code writeStreamOf(1).writeByte(connMap)}，也就是<b>往工作台的元胞流里追加字节</b>。
+     * {@link Sync} 对"半截流"有过一次真实事故（服务端把 0xFF 当操作码解析后 NPE），
+     * 这里一次性要改上千个零件，绝不能走那条路。所以直接写 {@code connMap_$eq}，
+     * 让随后的整板同步把结果带出去。
+     *
+     * <p>走两趟：第一趟 {@code discover()} 会顺手把邻居的位也置上（对方的
+     * {@code connect()}），第二趟从头再算一遍，保证先处理的零件也看到了后处理的邻居。
+     *
+     * @return 第一趟里被修正的零件个数（0 表示文件本来就是自洽的）
+     */
+    public static int reinitConnections(IntegratedCircuit ic) {
+        if (ic == null) {
+            return 0;
+        }
+        int changed = 0;
+        int logged = 0;
+        try {
+            Size s = ic.size();
+            if (s == null) {
+                return 0;
+            }
+            int w = s.width();
+            int h = s.height();
+            for (int pass = 0; pass < 2; pass++) {
+                for (int x = 0; x < w; x++) {
+                    for (int y = 0; y < h; y++) {
+                        CircuitPart p;
+                        try {
+                            p = ic.getPart(x, y);
+                        }
+                        catch (Throwable ignored) {
+                            continue;
+                        }
+                        if (!(p instanceof TConnectableICPart)) {
+                            continue;
+                        }
+                        TConnectableICPart c = (TConnectableICPart) p;
+                        byte have = c.connMap();
+                        byte want = 0;
+                        for (int r = 0; r < 4; r++) {
+                            try {
+                                if (c.discover(r)) {
+                                    want |= 1 << r;
+                                }
+                            }
+                            catch (Throwable ignored) {
+                            }
+                        }
+                        if (want == have) {
+                            continue;
+                        }
+                        // Keep bits 4..7 untouched.  Nothing in the fabrication package
+                        // writes them today, but TArrayGateICPart.propagateOther() reads
+                        // connMap>>4 and connMap>>8, so silently zeroing them would be a
+                        // behaviour change we cannot see.  Only the four direction bits
+                        // are ours to recompute.
+                        c.connMap_$eq((byte) ((have & 0xF0) | want));
+                        if (pass != 0) {
+                            continue;
+                        }
+                        changed++;
+                        if (logged < CONN_LOG_LIMIT) {
+                            logged++;
+                            System.out.println("[ICWbEx] conn fix (" + x + "," + y + ") "
+                                + p.getClass().getSimpleName()
+                                + " " + (have & 0xF) + " -> " + (want & 0xF));
+                        }
+                    }
+                }
+            }
+        }
+        catch (Throwable ignored) {
+        }
+        return changed;
+    }
+
+    /**
      * 把一份"蓝图 NBT"应用到电路并同步给服务端。
      *
      * <p>蓝图文件和分享串（{@link Share}）走的是<b>同一个入口</b>，
@@ -714,7 +935,19 @@ public final class Blueprints {
             }
             catch (Throwable ignored) {
             }
+            // 0.4.9：先复位计时器，再 load。顺序不能反 —— load 会立刻读 pelapsed
+            // 并调用 getTotalTime()，那正是崩溃点。
+            int stopped = stopTimers(t);
+            if (stopped > 0) {
+                System.out.println("[ICWbEx] bp.apply stopped " + stopped + " running timer(s)");
+            }
             ic.load(t);
+            // 0.4.9：load 用 setPart_do()，不触发 onAdded()，客户端的掩码不会自己重算。
+            // 这里补上，服务端在它那头本来就是现算的。
+            int relinked = reinitConnections(ic);
+            if (relinked > 0) {
+                System.out.println("[ICWbEx] bp.apply reinit " + relinked + " part(s)");
+            }
             ic.refreshErrors();
             // 0.4.8 诊断：应用之后板上真正生效的名字（load 会从 NBT 的 name 覆盖）。
             try {

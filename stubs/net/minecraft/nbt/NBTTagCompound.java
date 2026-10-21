@@ -59,4 +59,31 @@ public class NBTTagCompound {
     public byte[] func_74770_j(String key) {
         return null;
     }
+
+    /**
+     * 0.4.9 (Timer state reset): getLong(String)J.
+     * Verified with mcref/ask.py against the real client jar:
+     * {@code method long func_74763_f(java.lang.String) (Ljava/lang/String;)J}.
+     * A missing key returns 0 -- that is exactly what turned a blueprint without
+     * {@code pelapsed} into a crash, see {@link #func_74772_a}.
+     */
+    public long func_74763_f(String key) {
+        return 0L;
+    }
+
+    /**
+     * 0.4.9 (Timer state reset): setLong(String, long)V.
+     * Verified with mcref/ask.py: {@code method void func_74772_a(java.lang.String, long) (Ljava/lang/String;J)V}.
+     */
+    public void func_74772_a(String key, long value) {
+    }
+
+    /**
+     * 0.4.9 (held-chip guard): getCompoundTag(String)Lnet/minecraft/nbt/NBTTagCompound;.
+     * Verified with mcref/ask.py: {@code method dh func_74775_l(java.lang.String) (Ljava/lang/String;)Ldh;}.
+     * Returns a null compound when the key is missing or holds another type.
+     */
+    public NBTTagCompound func_74775_l(String key) {
+        return null;
+    }
 }

@@ -19,7 +19,7 @@
 
 1. GTNH 1.7.10 实例（Java 17+ 启动）。
 2. 把 `ICWbEx-x.x.x.jar` 放进 `.minecraft/mods/`。仅客户端；服务器不装。
-3. 需要 ProjectRed（在 `ProjRed-4.12.44-GTNH` 上验证）+ MrTJPCore。
+3. 需要 ProjectRed（在 `ProjRed-4.12.44-GTNH` 与 `ProjRed-4.12.47-GTNH`（GTNH 2.9.0-RC-1）上验证）+ MrTJPCore。
 
 ## 用法 / Usage
 
@@ -35,6 +35,12 @@
 
 ## 已知问题
 
+- **计时器（Timer / StateCell）与"取板"**：ProjectRed 上游有个 bug——`Timer.save` 在计时器
+  运行时把 `pelapsed >= 0` 写进 NBT，而 `Timer.load` 见到 `>= 0` 就会去算当前时刻，放置
+  物品的瞬间那条路径上 `MultipartSaveLoad.loadingWorld()` 是 `null`，于是客户端 NPE。
+  本模组从 0.4.9 起在**客户端手持芯片**时把 `pelapsed` 压成 `-1`（每 tick 一次），因此：
+  导入、粘贴、放置之后**计时器从 0 重新开始计时**，原件跑了多久不会被带过去。服务端不装
+  本模组也照样能被这样放置的芯片正常工作。
 - **集束线缆不支持复制**：框选与复制会自动跳过集束线缆，粘贴也不会覆盖它们所在的格子。原因是经由剪贴板/整板描述包同步集束线缆会触发 ProjectRed 的 null-signal bug（空闲的全零信号在服务端被解析成 null 并导致崩溃），因此只能刻意绕开。若上游修复后，这一限制有望解除。
 - **日志里的 client part stream couldnt find part 是正常现象**：由 ProjectRed 自己打印，出现在"某个元件刚被删除、而服务器同一 tick 仍在为它发状态帧"的瞬间。只要后面没有紧跟 Invalid gate subID: 0，它就是无害的协议噪音。
 
